@@ -1,12 +1,67 @@
-"""Modelos Pydantic: piezas (ventanas), contenedores y resultados de cubicaje."""
+"""Modelos Pydantic: piezas de carga, contenedores y resultados de cubicaje."""
 
 from enum import Enum
 
 from pydantic import BaseModel, Field
 
 
-class WindowItem(BaseModel):
-    """Una fila del Excel importado (una linea de producto, con cantidad)."""
+class ItemType(str, Enum):
+    """Clasificacion fisica del item (CUBOX 2.0). No confundir con los
+    "Planning Modes" (Loose Boxes, Palletized Load, Build Pallets, Panels &
+    Fragile, Custom Load) que son flujos de preparacion, no tipos de item."""
+
+    BOX = "box"
+    PALLET = "pallet"
+    PANEL = "panel"
+    CUSTOM = "custom"
+
+
+class OrientationPolicy(str, Enum):
+    """Que orientaciones son fisicamente validas para un item.
+
+    Separada de ItemType a proposito: un BOX puede ser FREE o UPRIGHT segun
+    reglas de manejo (fragilidad, "this side up"), no segun su tipo fisico.
+
+    FREE            = las 6 orientaciones axis-aligned posibles.
+    UPRIGHT         = la dimension `height` siempre vertical; solo rota 90
+                       grados en el piso entre `width`/`thickness`.
+    PANEL_EDGE_ONLY = regla critica actual de ventanas: la cara
+                       Width x Height jamas puede ser la base (4 orientaciones).
+    FIXED           = una sola orientacion, tal como se especifico el item.
+    """
+
+    FREE = "free"
+    UPRIGHT = "upright"
+    PANEL_EDGE_ONLY = "panel_edge_only"
+    FIXED = "fixed"
+
+
+DEFAULT_ORIENTATION_POLICY_BY_ITEM_TYPE: dict[ItemType, OrientationPolicy] = {
+    ItemType.PANEL: OrientationPolicy.PANEL_EDGE_ONLY,
+    ItemType.BOX: OrientationPolicy.FREE,
+    ItemType.PALLET: OrientationPolicy.UPRIGHT,
+    ItemType.CUSTOM: OrientationPolicy.FREE,
+}
+
+
+def resolve_orientation_policy(item_type: ItemType, orientation_policy: OrientationPolicy | None) -> OrientationPolicy:
+    """orientation_policy explicito siempre gana; si no se especifico, se usa
+    el default de item_type. Un WindowItem/legacy item (item_type=PANEL, sin
+    orientation_policy) resuelve siempre a PANEL_EDGE_ONLY -comportamiento
+    identico al de antes de que este campo existiera."""
+    if orientation_policy is not None:
+        return orientation_policy
+    return DEFAULT_ORIENTATION_POLICY_BY_ITEM_TYPE[item_type]
+
+
+class LoadItem(BaseModel):
+    """Una fila de carga a planificar (una linea de producto, con cantidad).
+
+    Generalizacion de lo que antes era WindowItem: mismos campos y mismo
+    comportamiento por defecto (item_type=PANEL sin orientation_policy se
+    comporta exactamente como una ventana), mas item_type/orientation_policy
+    para representar otros tipos de carga. `WindowItem` es un alias de este
+    modelo por compatibilidad -no se elimina ni se duplica logica."""
 
     code: str
     description: str = ""
@@ -21,6 +76,17 @@ class WindowItem(BaseModel):
     priority: int = 0
     max_stack_weight: float | None = Field(default=None, description="kg, None = sin limite")
     delivery_sequence: int | None = Field(default=None, description="orden de entrega/parada; None = sin definir")
+    item_type: ItemType = ItemType.PANEL
+    orientation_policy: OrientationPolicy | None = Field(
+        default=None, description="None = usar la politica por defecto de item_type"
+    )
+
+    @property
+    def resolved_orientation_policy(self) -> OrientationPolicy:
+        return resolve_orientation_policy(self.item_type, self.orientation_policy)
+
+
+WindowItem = LoadItem
 
 
 class ContainerSpec(BaseModel):
@@ -75,6 +141,12 @@ class PlacedPiece(BaseModel):
     source_width: float
     source_height: float
     source_thickness: float
+    item_type: ItemType = ItemType.PANEL
+    orientation_policy: OrientationPolicy | None = None
+
+    @property
+    def resolved_orientation_policy(self) -> OrientationPolicy:
+        return resolve_orientation_policy(self.item_type, self.orientation_policy)
 
 
 class UnloadedItem(BaseModel):
@@ -93,6 +165,12 @@ class UnloadedItem(BaseModel):
     delivery_sequence: int | None = None
     reason: str
     reason_code: str
+    item_type: ItemType = ItemType.PANEL
+    orientation_policy: OrientationPolicy | None = None
+
+    @property
+    def resolved_orientation_policy(self) -> OrientationPolicy:
+        return resolve_orientation_policy(self.item_type, self.orientation_policy)
 
 
 class PackingMetrics(BaseModel):

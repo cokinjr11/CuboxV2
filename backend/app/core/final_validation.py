@@ -11,7 +11,7 @@ pospuesto explicitamente en V3 y no se construyo en V4 -ver el plan de V4).
 """
 
 from app.core.geometry import Box, boxes_overlap, boxes_too_close, check_stack_weight, check_support, within_container
-from app.core.orientation import is_valid_orientation
+from app.core.orientation import is_valid_orientation, orientation_rejection_reason
 from app.core.reserved_zones import ReservedZone, zone_conflict
 from app.models.schemas import ContainerSpec, PackingResult
 
@@ -40,8 +40,9 @@ def validate_for_export(
         if not within_container(box, container.length, container.width, container.height):
             errors.append(f"{p.id} esta fuera de los limites del contenedor")
 
-        if not is_valid_orientation(p.source_width, p.source_height, p.source_thickness, p.dx, p.dy, p.dz):
-            errors.append(f"{p.id}: orientacion invalida (la cara Width x Height no puede ser la base)")
+        policy = p.resolved_orientation_policy
+        if not is_valid_orientation(p.source_width, p.source_height, p.source_thickness, p.dx, p.dy, p.dz, policy):
+            errors.append(f"{p.id}: {orientation_rejection_reason(policy)}")
 
         support_ok, support_reason = check_support(box, boxes)
         if not support_ok:

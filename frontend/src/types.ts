@@ -1,3 +1,11 @@
+// CUBOX 2.0 - clasificacion generica del item (ver backend app/models/schemas.py).
+// item_type=PANEL / orientation_policy=null reproduce el comportamiento
+// legacy exacto de ventanas; ambos campos son opcionales aqui para no
+// forzar a actualizar el resto del frontend en esta fase.
+export type ItemType = "box" | "pallet" | "panel" | "custom";
+
+export type OrientationPolicy = "free" | "upright" | "panel_edge_only" | "fixed";
+
 export interface WindowItem {
   code: string;
   description: string;
@@ -12,6 +20,8 @@ export interface WindowItem {
   priority: number;
   max_stack_weight: number | null;
   delivery_sequence: number | null;
+  item_type?: ItemType;
+  orientation_policy?: OrientationPolicy | null;
 }
 
 export interface ContainerSpec {
@@ -64,6 +74,8 @@ export interface PlacedPiece {
   source_width: number;
   source_height: number;
   source_thickness: number;
+  item_type?: ItemType;
+  orientation_policy?: OrientationPolicy | null;
 }
 
 export interface UnloadedItem {
@@ -82,6 +94,8 @@ export interface UnloadedItem {
   delivery_sequence: number | null;
   reason: string;
   reason_code: string;
+  item_type?: ItemType;
+  orientation_policy?: OrientationPolicy | null;
 }
 
 export interface PackingMetrics {

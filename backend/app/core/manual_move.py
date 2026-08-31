@@ -15,9 +15,9 @@ from app.core.geometry import (
     has_collision,
     within_container,
 )
-from app.core.orientation import is_valid_orientation
+from app.core.orientation import is_valid_orientation, orientation_rejection_reason
 from app.core.reserved_zones import ReservedZone, zone_conflict_with_clearance
-from app.models.schemas import ContainerSpec, PlacedPiece
+from app.models.schemas import ContainerSpec, OrientationPolicy, PlacedPiece
 
 
 def validate_placement(
@@ -38,11 +38,13 @@ def validate_placement(
     container: ContainerSpec,
     reserved_zones: list[ReservedZone] | None = None,
     clearance: float = 0.0,
+    orientation_policy: OrientationPolicy = OrientationPolicy.PANEL_EDGE_ONLY,
 ) -> tuple[bool, str]:
     reserved_zones = reserved_zones or []
 
-    if not is_valid_orientation(width, height, thickness, dx, dy, dz):
-        return False, "Orientacion invalida: la ventana no puede quedar acostada sobre la cara de vidrio"
+    if not is_valid_orientation(width, height, thickness, dx, dy, dz, orientation_policy):
+        reason = orientation_rejection_reason(orientation_policy)
+        return False, reason[0].upper() + reason[1:]
 
     candidate_box = Box(
         id=piece_id, x=x, y=y, z=z, dx=dx, dy=dy, dz=dz, stackable=stackable, max_stack_weight=max_stack_weight
@@ -122,4 +124,5 @@ def validate_move(
         container,
         reserved_zones,
         clearance,
+        piece.resolved_orientation_policy,
     )

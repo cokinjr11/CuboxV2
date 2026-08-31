@@ -136,6 +136,8 @@ def _window_item_from_placed(p: PlacedPiece) -> WindowItem:
         priority=p.priority,
         max_stack_weight=p.max_stack_weight,
         delivery_sequence=p.delivery_sequence,
+        item_type=p.item_type,
+        orientation_policy=p.orientation_policy,
     )
 
 
@@ -154,6 +156,8 @@ def _window_item_from_unloaded(u: UnloadedItem) -> WindowItem:
         priority=u.priority,
         max_stack_weight=u.max_stack_weight,
         delivery_sequence=u.delivery_sequence,
+        item_type=u.item_type,
+        orientation_policy=u.orientation_policy,
     )
 
 
@@ -457,6 +461,8 @@ def remove_piece(req: RemovePieceRequest):
             delivery_sequence=piece.delivery_sequence,
             reason="Removido manualmente",
             reason_code=UnloadedReason.MANUAL_REMOVE.value,
+            item_type=piece.item_type,
+            orientation_policy=piece.orientation_policy,
         )
     )
     _refresh_derived(state)
@@ -490,6 +496,7 @@ def insert_piece(req: InsertPieceRequest):
         _current_state["container"],
         _reserved_zones(),
         _clearance(),
+        item.resolved_orientation_policy,
     )
     if not valid:
         raise HTTPException(409, reason)
@@ -497,7 +504,7 @@ def insert_piece(req: InsertPieceRequest):
     matching = next(
         (
             o
-            for o in get_valid_orientations(item.width, item.height, item.thickness)
+            for o in get_valid_orientations(item.width, item.height, item.thickness, item.resolved_orientation_policy)
             if o.dx == req.dx and o.dy == req.dy and o.dz == req.dz
         ),
         None,
@@ -528,6 +535,8 @@ def insert_piece(req: InsertPieceRequest):
             source_width=item.width,
             source_height=item.height,
             source_thickness=item.thickness,
+            item_type=item.item_type,
+            orientation_policy=item.orientation_policy,
         )
     )
     _refresh_derived(state)
@@ -540,7 +549,10 @@ def _change_orientation(req: RotatePieceRequest, orientation_fn, action: str) ->
     piece = _find_placed(state, req.piece_id)
     _ensure_unlocked(piece)
 
-    target = orientation_fn(piece.source_width, piece.source_height, piece.source_thickness, piece.dx, piece.dy, piece.dz)
+    policy = piece.resolved_orientation_policy
+    target = orientation_fn(
+        piece.source_width, piece.source_height, piece.source_thickness, piece.dx, piece.dy, piece.dz, policy
+    )
     if target is None:
         raise HTTPException(409, f"Orientacion actual no reconocida, no se puede {action}")
 
@@ -562,6 +574,7 @@ def _change_orientation(req: RotatePieceRequest, orientation_fn, action: str) ->
         _current_state["container"],
         _reserved_zones(),
         _clearance(),
+        policy,
     )
     if not valid:
         raise HTTPException(409, reason)

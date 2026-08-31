@@ -6,7 +6,8 @@ suficientemente confiable para un MVP. No busca la solucion optima, busca una
 solucion valida que respete todas las restricciones del negocio.
 
 Reglas que SIEMPRE se respetan (ver core/orientation.py y core/geometry.py):
-  - Solo las 4 orientaciones validas de cada ventana (nunca acostada en el vidrio).
+  - Solo las orientaciones validas segun la OrientationPolicy resuelta del item
+    (por defecto, la regla de ventanas: nunca acostada en el vidrio).
   - Sin colisiones entre piezas.
   - Piezas dentro de los limites del contenedor.
   - Peso total <= peso maximo del contenedor.
@@ -80,7 +81,7 @@ def _expand_instances(items: list[WindowItem], reserved_ids: set[str] | None = N
 
 
 def _fits_in_container_at_all(item: WindowItem, container: ContainerSpec) -> bool:
-    for o in get_valid_orientations(item.width, item.height, item.thickness):
+    for o in get_valid_orientations(item.width, item.height, item.thickness, item.resolved_orientation_policy):
         if o.dx <= container.length + TOL and o.dy <= container.width + TOL and o.dz <= container.height + TOL:
             return True
     return False
@@ -182,6 +183,8 @@ def _unloaded_item(inst: _Instance, reason_code: UnloadedReason, reason_text: st
         delivery_sequence=w.delivery_sequence,
         reason=reason_text,
         reason_code=reason_code.value,
+        item_type=w.item_type,
+        orientation_policy=w.orientation_policy,
     )
 
 
@@ -283,7 +286,7 @@ def pack_container(
         for cand in candidates:
             if placed_ok:
                 break
-            for o in get_valid_orientations(w.width, w.height, w.thickness):
+            for o in get_valid_orientations(w.width, w.height, w.thickness, w.resolved_orientation_policy):
                 candidate_box = Box(
                     id=inst.instance_id,
                     x=cand.x,
@@ -346,6 +349,8 @@ def pack_container(
                         source_width=w.width,
                         source_height=w.height,
                         source_thickness=w.thickness,
+                        item_type=w.item_type,
+                        orientation_policy=w.orientation_policy,
                     )
                 )
                 total_weight += w.weight
