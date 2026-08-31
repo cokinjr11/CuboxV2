@@ -1,0 +1,55 @@
+:root {
+  color-scheme: dark;
+  font: 14px/1.4 system-ui, "Segoe UI", Roboto, sans-serif;
+
+  --color-bg: #0e0e10;
+  --color-bg-sidebar: #1c1c1e;
+  --color-bg-panel: #2a2a2d;
+  --color-bg-panel-hover: #35353a;
+  --color-bg-panel-alt: #202023;
+  --color-border: #333;
+  --color-border-strong: #444;
+  --color-border-soft: #3a3a3d;
+  --color-text: #eee;
+  --color-text-muted: #999;
+  --color-accent: #3a6ea5;
+  --color-accent-hover: #4a80bb;
+  --color-danger: #ff6b6b;
+  --color-success: #6bcb77;
+}
+
+/* Tema claro: se activa poniendo data-theme="light" en <html> desde el
+   selector de Ajustes; sin ese atributo, el tema por defecto sigue siendo el
+   oscuro de siempre (mismos valores que :root arriba). */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --color-bg: #f4f5f7;
+  --color-bg-sidebar: #ffffff;
+  --color-bg-panel: #eef0f3;
+  --color-bg-panel-hover: #e2e5ea;
+  --color-bg-panel-alt: #e6e8ec;
+  --color-border: #d7dae0;
+  --color-border-strong: #c3c8d1;
+  --color-border-soft: #d0d4db;
+  --color-text: #1c1c1e;
+  --color-text-muted: #6b7280;
+  --color-accent: #2f5f91;
+  --color-accent-hover: #3a6ea5;
+  --color-danger: #c0392b;
+  --color-success: #2f8f43;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--color-bg);
+  color: var(--color-text);
+}

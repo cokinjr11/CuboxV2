@@ -1,0 +1,19 @@
+backend/venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/.pytest_cache/
+
+frontend/node_modules/
+frontend/dist/
+
+# Claude Code local session config/permissions (maquina-especifico, no compartir)
+.claude/
+
+# Comunes
+.env
+.env.local
+*.pyc
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,235 @@
+import axios from "axios";
+import type {
+  ContainerSpec,
+  LoadingAnchor,
+  MoveValidationResult,
+  OptimizationMode,
+  OptimizeResponse,
+  PackingResult,
+  ReportDirection,
+  ReportMetadata,
+  SortReportBy,
+  StepMode,
+  WeightBalanceMode,
+  WindowItem,
+} from "../types";
+
+const API_BASE = "http://localhost:8000/api";
+
+export const api = axios.create({ baseURL: API_BASE });
+
+export async function fetchContainers(): Promise<ContainerSpec[]> {
+  const r = await api.get<ContainerSpec[]>("/containers");
+  return r.data;
+}
+
+export async function importExcel(file: File): Promise<WindowItem[]> {
+  const form = new FormData();
+  form.append("file", file);
+  const r = await api.post<WindowItem[]>("/import-excel", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return r.data;
+}
+
+export interface PackOptions {
+  optimizationMode: OptimizationMode;
+  enableCentralAisle: boolean;
+  aisleWidthMm: number;
+  clearanceMm: number;
+  weightBalanceMode: WeightBalanceMode;
+  loadingAnchor: LoadingAnchor;
+}
+
+export async function packContainer(
+  items: WindowItem[],
+  containerId: string,
+  options: PackOptions
+): Promise<OptimizeResponse> {
+  const r = await api.post<OptimizeResponse>("/pack", {
+    items,
+    container_id: containerId,
+    optimization_mode: options.optimizationMode,
+    enable_central_aisle: options.enableCentralAisle,
+    aisle_width_mm: options.aisleWidthMm,
+    clearance_mm: options.clearanceMm,
+    weight_balance_mode: options.weightBalanceMode,
+    loading_anchor: options.loadingAnchor,
+  });
+  return r.data;
+}
+
+export async function optimizeRemaining(options: {
+  optimizationMode: OptimizationMode;
+  weightBalanceMode: WeightBalanceMode;
+  loadingAnchor: LoadingAnchor;
+}): Promise<OptimizeResponse> {
+  const r = await api.post<OptimizeResponse>("/optimize-remaining", {
+    optimization_mode: options.optimizationMode,
+    weight_balance_mode: options.weightBalanceMode,
+    loading_anchor: options.loadingAnchor,
+  });
+  return r.data;
+}
+
+export async function exportExcel(): Promise<Blob> {
+  const r = await api.get("/export-excel", { responseType: "blob" });
+  return r.data;
+}
+
+export interface ContainerReportOptions {
+  meta: ReportMetadata;
+  sortBy: SortReportBy;
+  includeOverviewImage: boolean;
+  overviewImagePngBase64?: string;
+}
+
+export async function exportContainerReportPdf(options: ContainerReportOptions): Promise<Blob> {
+  const r = await api.post(
+    "/report/container-pdf",
+    {
+      meta: { project_name: options.meta.projectName, customer: options.meta.customer },
+      sort_by: options.sortBy,
+      include_overview_image: options.includeOverviewImage,
+      overview_image_png_base64: options.overviewImagePngBase64 ?? null,
+    },
+    { responseType: "blob" }
+  );
+  return r.data;
+}
+
+export interface StepModeOptions {
+  stepMode: StepMode;
+  piecesPerStep?: number;
+}
+
+export async function getReportSteps(direction: ReportDirection, options: StepModeOptions): Promise<string[][]> {
+  const r = await api.post<{ steps: string[][] }>("/report/steps", {
+    direction,
+    step_mode: options.stepMode,
+    pieces_per_step: options.piecesPerStep ?? null,
+  });
+  return r.data.steps;
+}
+
+export interface GuideReportOptions extends StepModeOptions {
+  meta: ReportMetadata;
+  stepImagesPngBase64: string[];
+}
+
+function guideReportBody(options: GuideReportOptions) {
+  return {
+    meta: { project_name: options.meta.projectName, customer: options.meta.customer },
+    step_mode: options.stepMode,
+    pieces_per_step: options.piecesPerStep ?? null,
+    step_images_png_base64: options.stepImagesPngBase64,
+  };
+}
+
+export async function exportLoadingGuidePdf(options: GuideReportOptions): Promise<Blob> {
+  const r = await api.post("/report/loading-guide-pdf", guideReportBody(options), { responseType: "blob" });
+  return r.data;
+}
+
+export async function exportUnloadingGuidePdf(options: GuideReportOptions): Promise<Blob> {
+  const r = await api.post("/report/unloading-guide-pdf", guideReportBody(options), { responseType: "blob" });
+  return r.data;
+}
+
+export async function validateMove(
+  pieceId: string,
+  x: number,
+  y: number,
+  z: number,
+  dx: number,
+  dy: number,
+  dz: number
+): Promise<MoveValidationResult> {
+  const r = await api.post<MoveValidationResult>("/validate-move", {
+    piece_id: pieceId,
+    x,
+    y,
+    z,
+    dx,
+    dy,
+    dz,
+  });
+  return r.data;
+}
+
+export async function applyMove(
+  pieceId: string,
+  x: number,
+  y: number,
+  z: number,
+  dx: number,
+  dy: number,
+  dz: number
+): Promise<PackingResult> {
+  const r = await api.post<PackingResult>("/apply-move", {
+    piece_id: pieceId,
+    x,
+    y,
+    z,
+    dx,
+    dy,
+    dz,
+  });
+  return r.data;
+}
+
+export async function removePiece(pieceId: string): Promise<PackingResult> {
+  const r = await api.post<PackingResult>("/remove-piece", { piece_id: pieceId });
+  return r.data;
+}
+
+export async function insertPiece(
+  unloadedId: string,
+  x: number,
+  y: number,
+  z: number,
+  dx: number,
+  dy: number,
+  dz: number
+): Promise<PackingResult> {
+  const r = await api.post<PackingResult>("/insert-piece", {
+    unloaded_id: unloadedId,
+    x,
+    y,
+    z,
+    dx,
+    dy,
+    dz,
+  });
+  return r.data;
+}
+
+export async function rotatePiece(pieceId: string): Promise<PackingResult> {
+  const r = await api.post<PackingResult>("/rotate-piece", { piece_id: pieceId });
+  return r.data;
+}
+
+export async function turnPiece(pieceId: string): Promise<PackingResult> {
+  const r = await api.post<PackingResult>("/turn-piece", { piece_id: pieceId });
+  return r.data;
+}
+
+export async function lockPiece(pieceId: string): Promise<PackingResult> {
+  const r = await api.post<PackingResult>("/lock-piece", { piece_id: pieceId });
+  return r.data;
+}
+
+export async function unlockPiece(pieceId: string): Promise<PackingResult> {
+  const r = await api.post<PackingResult>("/unlock-piece", { piece_id: pieceId });
+  return r.data;
+}
+
+export async function undo(): Promise<PackingResult> {
+  const r = await api.post<PackingResult>("/undo");
+  return r.data;
+}
+
+export async function redo(): Promise<PackingResult> {
+  const r = await api.post<PackingResult>("/redo");
+  return r.data;
+}
