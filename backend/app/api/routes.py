@@ -31,13 +31,14 @@ from app.core.sequence import (
     compute_unload_steps,
     detect_operational_warnings,
 )
-from app.models.containers import get_container, list_containers
+from app.models.containers import build_custom_load_space, get_container, list_containers, list_load_spaces
 from app.models.schemas import (
     ContainerReportRequest,
     ContainerSpec,
     InsertPieceRequest,
     LoadingAnchor,
     LockPieceRequest,
+    LoadSpaceSpec,
     MoveRequest,
     MoveValidationResult,
     OptimizationMode,
@@ -67,7 +68,7 @@ TOL = 1e-6
 
 _current_state: dict = {
     "result": None,
-    "container": None,
+    "load_space": None,
     "history": EditHistory(),
     "reserved_zones": [],
     "clearance": 0.0,
@@ -113,11 +114,11 @@ def _ensure_unlocked(piece: PlacedPiece) -> None:
 
 
 def _refresh_derived(state: PackingResult) -> None:
-    state.metrics = compute_metrics(_current_state["container"], state.placed, state.unloaded)
-    state.load_sequence = compute_load_sequence(state.placed, _current_state["container"], _current_state["loading_anchor"])
+    state.metrics = compute_metrics(_current_state["load_space"], state.placed, state.unloaded)
+    state.load_sequence = compute_load_sequence(state.placed, _current_state["load_space"], _current_state["loading_anchor"])
     state.unload_sequence = compute_unload_sequence(state.placed)
     state.load_sequence_warnings = detect_operational_warnings(
-        state.placed, _current_state["container"], _current_state["loading_anchor"]
+        state.placed, _current_state["load_space"], _current_state["loading_anchor"]
     )
 
 
@@ -166,6 +167,14 @@ def get_containers():
     return list_containers()
 
 
+@router.get("/load-spaces", response_model=list[LoadSpaceSpec])
+def get_load_spaces():
+    """Generalizacion de /api/containers (CUBOX 2.0): hoy devuelve el mismo
+    catalogo -Truck/Trailer todavia no tienen presets (ver
+    models/containers.py)."""
+    return list_load_spaces()
+
+
 @router.get("/state", response_model=PackingResult)
 def get_state():
     return _get_active_state()
@@ -182,12 +191,25 @@ async def import_excel(file: UploadFile = File(...)):
         raise HTTPException(400, str(e))
 
 
+def _resolve_load_space(request: PackRequest) -> LoadSpaceSpec:
+    """custom_load_space (Truck/Trailer/Container/Custom sin catalogo) tiene
+    prioridad; si no vino, se resuelve container_id contra el catalogo
+    existente -comportamiento identico al de antes de que custom_load_space
+    existiera."""
+    if request.custom_load_space is not None:
+        c = request.custom_load_space
+        return build_custom_load_space(c.name, c.load_space_type, c.length, c.width, c.height, c.max_weight)
+    if request.container_id is not None:
+        try:
+            return get_container(request.container_id)
+        except KeyError as e:
+            raise HTTPException(404, str(e))
+    raise HTTPException(400, "Se requiere container_id o custom_load_space")
+
+
 @router.post("/pack", response_model=OptimizeResponse)
 def pack(request: PackRequest):
-    try:
-        container = get_container(request.container_id)
-    except KeyError as e:
-        raise HTTPException(404, str(e))
+    container = _resolve_load_space(request)
 
     zones: list[ReservedZone] = []
     if request.enable_central_aisle:
@@ -210,7 +232,7 @@ def pack(request: PackRequest):
         alt.result.reserved_zones = zones_out
 
     _current_state["result"] = best
-    _current_state["container"] = container
+    _current_state["load_space"] = container
     _current_state["reserved_zones"] = zones
     _current_state["clearance"] = request.clearance_mm
     _current_state["optimization_mode"] = request.optimization_mode
@@ -232,7 +254,7 @@ def optimize_remaining(req: OptimizeRemainingRequest = OptimizeRemainingRequest(
     se respetan aunque no se haya vuelto a correr /api/pack). Si se omiten,
     se reusa lo ultimo guardado, igual que antes."""
     state = _get_active_state()
-    container = _current_state["container"]
+    container = _current_state["load_space"]
 
     if req.optimization_mode is not None:
         _current_state["optimization_mode"] = req.optimization_mode
@@ -310,7 +332,7 @@ def _compute_report_steps(
         base_sequence = state.load_sequence if direction == ReportDirection.LOAD else state.unload_sequence
         return chunk_sequence(base_sequence, pieces_per_step)
     if direction == ReportDirection.LOAD:
-        return compute_load_steps(state.placed, _current_state["container"], _current_state["loading_anchor"])
+        return compute_load_steps(state.placed, _current_state["load_space"], _current_state["loading_anchor"])
     return compute_unload_steps(state.placed)
 
 
@@ -330,7 +352,7 @@ def report_validate():
     chequeos existentes (colision, orientacion, soporte, peso, clearance,
     zonas reservadas, ids duplicados) sobre el estado activo."""
     state = _get_active_state()
-    errors = validate_for_export(state, _current_state["container"], _reserved_zones(), _clearance())
+    errors = validate_for_export(state, _current_state["load_space"], _reserved_zones(), _clearance())
     return ReportValidationResponse(valid=len(errors) == 0, errors=errors)
 
 
@@ -339,7 +361,7 @@ def _ensure_exportable(state: PackingResult) -> None:
     /report/validate antes de capturar snapshots, cada endpoint de PDF
     revalida el estado el sabe -nunca se genera un PDF de un cubicaje
     invalido, aunque alguien llame a la API directamente."""
-    errors = validate_for_export(state, _current_state["container"], _reserved_zones(), _clearance())
+    errors = validate_for_export(state, _current_state["load_space"], _reserved_zones(), _clearance())
     if errors:
         raise HTTPException(422, {"errors": errors})
 
@@ -399,7 +421,7 @@ def validate_move_endpoint(move: MoveRequest):
         move.dy,
         move.dz,
         state.placed,
-        _current_state["container"],
+        _current_state["load_space"],
         _reserved_zones(),
         _clearance(),
     )
@@ -421,7 +443,7 @@ def apply_move(move: MoveRequest):
         move.dy,
         move.dz,
         state.placed,
-        _current_state["container"],
+        _current_state["load_space"],
         _reserved_zones(),
         _clearance(),
     )
@@ -493,7 +515,7 @@ def insert_piece(req: InsertPieceRequest):
         req.dy,
         req.dz,
         state.placed,
-        _current_state["container"],
+        _current_state["load_space"],
         _reserved_zones(),
         _clearance(),
         item.resolved_orientation_policy,
@@ -571,7 +593,7 @@ def _change_orientation(req: RotatePieceRequest, orientation_fn, action: str) ->
         target.dy,
         target.dz,
         state.placed,
-        _current_state["container"],
+        _current_state["load_space"],
         _reserved_zones(),
         _clearance(),
         policy,

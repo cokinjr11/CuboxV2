@@ -89,13 +89,66 @@ class LoadItem(BaseModel):
 WindowItem = LoadItem
 
 
-class ContainerSpec(BaseModel):
+class LoadSpaceType(str, Enum):
+    """Clasificacion del espacio de carga (CUBOX 2.0)."""
+
+    CONTAINER = "container"
+    TRUCK = "truck"
+    TRAILER = "trailer"
+    CUSTOM = "custom"
+
+
+class LoadingOpeningType(str, Enum):
+    """Por donde se accede al espacio de carga. Opcional: si no se conoce el
+    dato real, se deja en None -nunca se inventa (ver LoadSpaceSpec)."""
+
+    REAR = "rear"
+    SIDE = "side"
+    TOP = "top"
+    MULTIPLE = "multiple"
+
+
+class LoadSpaceSpec(BaseModel):
+    """Espacio de carga generico: contenedor, camion, trailer o
+    personalizado. Generalizacion de lo que antes era ContainerSpec -mismos
+    campos y mismo comportamiento (ContainerSpec es un alias de este modelo,
+    igual patron que WindowItem/LoadItem). Todo ContainerSpec existente
+    sigue siendo valido: load_space_type default = CONTAINER.
+
+    Punto de extension para Fase 2B (ejes/distribucion de peso de vehiculos
+    de carretera): esos campos no existen todavia -se agregaran a este
+    mismo modelo cuando corresponda, sin otro refactor destructivo."""
+
     id: str
     name: str
+    load_space_type: LoadSpaceType = LoadSpaceType.CONTAINER
     length: float = Field(description="mm, eje X interno")
     width: float = Field(description="mm, eje Y interno")
     height: float = Field(description="mm, eje Z interno")
     max_weight: float = Field(description="kg, peso maximo de carga")
+    loading_opening_type: LoadingOpeningType | None = Field(
+        default=None, description="None = sin dato conocido; no se inventa"
+    )
+    rear_opening_width: float | None = Field(default=None, description="mm; None = sin dato conocido")
+    rear_opening_height: float | None = Field(default=None, description="mm; None = sin dato conocido")
+
+
+ContainerSpec = LoadSpaceSpec
+
+
+class CustomLoadSpaceRequest(BaseModel):
+    """Definicion de un espacio de carga hecha por el usuario (Truck,
+    Trailer, Container o Custom con dimensiones propias). No se persiste en
+    el catalogo -se resuelve a un LoadSpaceSpec ad-hoc por request (ver
+    models/containers.py:build_custom_load_space); la persistencia real de
+    espacios de carga se manejara en una fase separada."""
+
+    name: str
+    load_space_type: LoadSpaceType
+    length: float = Field(gt=0, description="mm")
+    width: float = Field(gt=0, description="mm")
+    height: float = Field(gt=0, description="mm")
+    max_weight: float = Field(gt=0, description="kg")
 
 
 class OptimizationMode(str, Enum):
@@ -242,8 +295,14 @@ class OptimizeResponse(BaseModel):
 
 
 class PackRequest(BaseModel):
+    """container_id (catalogo existente) y custom_load_space (Truck/Trailer/
+    Container/Custom con dimensiones propias, sin catalogo) son mutuamente
+    excluyentes -custom_load_space tiene prioridad si ambos llegan. Un
+    request legacy que solo manda container_id sigue funcionando igual."""
+
     items: list[WindowItem]
-    container_id: str
+    container_id: str | None = None
+    custom_load_space: CustomLoadSpaceRequest | None = None
     optimization_mode: OptimizationMode = OptimizationMode.BEST_SPACE
     weight_balance_mode: WeightBalanceMode = WeightBalanceMode.NORMAL
     loading_anchor: LoadingAnchor = LoadingAnchor.BACK_RIGHT

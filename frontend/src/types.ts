@@ -24,6 +24,11 @@ export interface WindowItem {
   orientation_policy?: OrientationPolicy | null;
 }
 
+// CUBOX 2.0 - generalizacion de ContainerSpec (ver backend app/models/schemas.py).
+export type LoadSpaceType = "container" | "truck" | "trailer" | "custom";
+
+export type LoadingOpeningType = "rear" | "side" | "top" | "multiple";
+
 export interface ContainerSpec {
   id: string;
   name: string;
@@ -31,7 +36,14 @@ export interface ContainerSpec {
   width: number;
   height: number;
   max_weight: number;
+  load_space_type?: LoadSpaceType;
+  loading_opening_type?: LoadingOpeningType | null;
+  rear_opening_width?: number | null;
+  rear_opening_height?: number | null;
 }
+
+// Mismo shape que ContainerSpec, nombre generico para CUBOX 2.0.
+export type LoadSpaceSpec = ContainerSpec;
 
 export type OptimizationMode = "best_space" | "keep_groups" | "keep_systems";
 
