@@ -9,13 +9,15 @@ balance) para que la edicion manual y Optimize Remaining sigan respetando lo
 que el usuario eligio en el ultimo Optimize.
 """
 
-from fastapi import APIRouter, File, HTTPException, Response, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
 
 from app.core.excel_export import build_export_workbook
 from app.core.excel_import import parse_excel
 from app.core.final_validation import validate_for_export
 from app.core.geometry import Box, boxes_overlap, within_container
 from app.core.history import EditHistory
+from app.core.import_items import build_import_preview
+from app.core.import_templates import build_import_template
 from app.core.manual_move import validate_move, validate_placement
 from app.core.optimize import run_optimization
 from app.core.orientation import get_valid_orientations, toggle_orientation, turn_orientation
@@ -33,10 +35,12 @@ from app.core.sequence import (
     detect_operational_warnings,
 )
 from app.models.containers import build_custom_load_space, get_container, list_containers, list_load_spaces
+from app.models.import_schemas import ImportPreview
 from app.models.schemas import (
     ContainerReportRequest,
     ContainerSpec,
     InsertPieceRequest,
+    ItemType,
     LoadingAnchor,
     LockPieceRequest,
     LoadSpaceSpec,
@@ -197,6 +201,29 @@ async def import_excel(file: UploadFile = File(...)):
         return parse_excel(content)
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+@router.post("/import-items-excel", response_model=ImportPreview)
+async def import_items_excel(file: UploadFile = File(...), profile: ItemType = Form(...)):
+    """Import CUBOX 2.0 profile-aware (Fase 3B): BOX/PALLET/PANEL/CUSTOM.
+    Devuelve un preview -parsea y valida la hoja completa (todos los errores
+    juntos, no se detiene en la primera fila invalida) pero NO empaqueta ni
+    toca el estado activo de cubicaje. No reemplaza /api/import-excel
+    (legacy), que sigue igual."""
+    if not file.filename.lower().endswith((".xlsx", ".xlsm")):
+        raise HTTPException(400, "El archivo debe ser .xlsx")
+    content = await file.read()
+    return build_import_preview(content, profile)
+
+
+@router.get("/import-template/{profile}")
+def get_import_template(profile: ItemType):
+    workbook_bytes = build_import_template(profile)
+    return Response(
+        content=workbook_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="cubox-import-template-{profile.value}.xlsx"'},
+    )
 
 
 def _resolve_load_space(request: PackRequest) -> LoadSpaceSpec:
