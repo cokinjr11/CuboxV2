@@ -2,7 +2,7 @@
 
 from enum import Enum
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, computed_field, model_validator
 
 
 class ItemType(str, Enum):
@@ -62,12 +62,12 @@ class Dimensions3D(BaseModel):
     PanelDimensionMapping) en core/orientation.py -nunca una heuristica
     geometrica como min(length, width, height).
 
-    Nunca se guarda como campo independiente en LoadItem/PlacedPiece/
-    UnloadedItem: siempre se deriva en el momento (ver dimensions_from_legacy
-    y las properties `dimensions`/`source_dimensions`) a partir de los
-    campos legacy width/height/thickness, que siguen siendo la UNICA fuente
-    de verdad almacenada y serializada. Asi no puede haber 2 representaciones
-    independientes que se desincronicen."""
+    Fase 3A.1: esta es la UNICA fuente de verdad fisica almacenada en
+    LoadItem.dimensions/PlacedPiece.source_dimensions/UnloadedItem.dimensions.
+    Los campos legacy width/height/thickness (y source_*) ya NO se
+    almacenan de forma independiente: son `@computed_field` de solo lectura
+    derivados de este campo (ver legacy_from_dimensions) -no tienen setter,
+    asi que es estructuralmente imposible que diverjan."""
 
     length: float = Field(gt=0, description="mm")
     width: float = Field(gt=0, description="mm")
@@ -94,6 +94,63 @@ def dimensions_from_legacy(width: float, height: float, thickness: float) -> Dim
     return Dimensions3D(length=width, width=thickness, height=height)
 
 
+def legacy_from_dimensions(dims: Dimensions3D) -> tuple[float, float, float]:
+    """Inversa EXACTA de dimensions_from_legacy(): reconstruye (width,
+    height, thickness) legacy a partir de Dimensions3D. Se usa SOLO para
+    generar el output de compatibilidad (`@computed_field` width/height/
+    thickness en LoadItem/PlacedPiece/UnloadedItem) -la logica interna del
+    dominio (packer, orientation, manual_move, final_validation) debe seguir
+    consumiendo Dimensions3D directamente, nunca este resultado.
+
+    dimensions_from_legacy(*legacy_from_dimensions(d)) == d para cualquier
+    Dimensions3D `d` -round trip sin perdida (ver test_dimension_
+    canonicalization.py:TEST K)."""
+    return dims.length, dims.height, dims.width
+
+
+def _merge_legacy_and_generic_dimensions(data: dict, dims_key: str, legacy_keys: tuple[str, str, str]) -> dict:
+    """Logica compartida (Fase 3A.1) para el limite de compatibilidad
+    LEGACY INPUT -> Adaptador -> Dimensions3D descrito en el plan de esta
+    fase. Acepta el input legacy (width/height/thickness, o source_*), el
+    input generico nativo (`dims_key`: Dimensions3D) o ambos a la vez -en
+    cuyo caso deben ser fisicamente equivalentes o se rechaza el request con
+    un error claro (nunca se elige uno silenciosamente).
+
+    Usada por los `model_validator(mode="before")` de LoadItem, PlacedPiece
+    (con legacy_keys=source_*) y UnloadedItem."""
+    if dims_key in data and data[dims_key] is not None:
+        has_generic = True
+    else:
+        has_generic = False
+
+    present_legacy = [k for k in legacy_keys if data.get(k) is not None]
+    if present_legacy and len(present_legacy) != 3:
+        raise ValueError(
+            f"Deben proveerse los 3 campos legacy juntos ({', '.join(legacy_keys)}); "
+            f"solo se recibieron: {', '.join(present_legacy)}"
+        )
+
+    if not present_legacy:
+        return data  # solo input generico (o ninguno -> error natural de Pydantic: "field required")
+
+    width_key, height_key, thickness_key = legacy_keys
+    legacy_dims = dimensions_from_legacy(data[width_key], data[height_key], data[thickness_key])
+
+    if has_generic:
+        generic_dims = Dimensions3D.model_validate(data[dims_key])
+        if legacy_dims != generic_dims:
+            raise ValueError(
+                f"'{dims_key}' ({generic_dims}) y los campos legacy {legacy_keys} "
+                f"(equivalen a {legacy_dims}) son fisicamente inconsistentes -provee solo uno de los dos"
+            )
+
+    data = dict(data)
+    for k in legacy_keys:
+        data.pop(k, None)
+    data[dims_key] = legacy_dims
+    return data
+
+
 class PanelDimensionMapping(BaseModel):
     """Que 2 ejes de Dimensions3D forman la cara grande (panel/vidrio) y
     cual es el eje de thickness -unico mecanismo para interpretar
@@ -115,17 +172,24 @@ core/orientation.py:_panel_edge_only_orientations."""
 class LoadItem(BaseModel):
     """Una fila de carga a planificar (una linea de producto, con cantidad).
 
-    Generalizacion de lo que antes era WindowItem: mismos campos y mismo
-    comportamiento por defecto (item_type=PANEL sin orientation_policy se
-    comporta exactamente como una ventana), mas item_type/orientation_policy
-    para representar otros tipos de carga. `WindowItem` es un alias de este
-    modelo por compatibilidad -no se elimina ni se duplica logica."""
+    Generalizacion de lo que antes era WindowItem: mismo comportamiento por
+    defecto (item_type=PANEL sin orientation_policy se comporta exactamente
+    como una ventana), mas item_type/orientation_policy para representar
+    otros tipos de carga. `WindowItem` es un alias de este modelo por
+    compatibilidad -no se elimina ni se duplica logica.
+
+    Fase 3A.1: `dimensions` (Dimensions3D) es el UNICO campo fisico
+    almacenado -width/height/thickness son `@computed_field` de solo
+    lectura derivados de el (ver legacy_from_dimensions), y el
+    `model_validator` de abajo acepta indistintamente:
+      - input legacy: width/height/thickness (comportamiento CUBOX 1.0)
+      - input nativo: dimensions={length,width,height} (CUBOX 2.0)
+      - ambos a la vez, si son fisicamente equivalentes (si no, se rechaza)
+    """
 
     code: str
     description: str = ""
-    width: float = Field(gt=0, description="mm")
-    height: float = Field(gt=0, description="mm")
-    thickness: float = Field(gt=0, description="mm")
+    dimensions: Dimensions3D
     weight: float = Field(gt=0, description="kg, peso unitario")
     quantity: int = Field(gt=0)
     system: str = ""
@@ -139,15 +203,31 @@ class LoadItem(BaseModel):
         default=None, description="None = usar la politica por defecto de item_type"
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_dimensions(cls, data):
+        if not isinstance(data, dict):
+            return data
+        return _merge_legacy_and_generic_dimensions(data, "dimensions", ("width", "height", "thickness"))
+
     @property
     def resolved_orientation_policy(self) -> OrientationPolicy:
         return resolve_orientation_policy(self.item_type, self.orientation_policy)
 
+    @computed_field(description="mm; compatibilidad CUBOX 1.0, derivado de dimensions -ver legacy_from_dimensions")  # type: ignore[misc]
     @property
-    def dimensions(self) -> Dimensions3D:
-        """Representacion generica canonica (Fase 3A), derivada en el
-        momento -nunca almacenada- a partir de width/height/thickness."""
-        return dimensions_from_legacy(self.width, self.height, self.thickness)
+    def width(self) -> float:
+        return legacy_from_dimensions(self.dimensions)[0]
+
+    @computed_field(description="mm; compatibilidad CUBOX 1.0, derivado de dimensions")  # type: ignore[misc]
+    @property
+    def height(self) -> float:
+        return legacy_from_dimensions(self.dimensions)[1]
+
+    @computed_field(description="mm; compatibilidad CUBOX 1.0, derivado de dimensions")  # type: ignore[misc]
+    @property
+    def thickness(self) -> float:
+        return legacy_from_dimensions(self.dimensions)[2]
 
 
 WindowItem = LoadItem
@@ -328,31 +408,44 @@ class PlacedPiece(BaseModel):
     dy: float
     dz: float
     orientation_label: str
-    source_width: float
-    source_height: float
-    source_thickness: float
+    source_dimensions: Dimensions3D
     item_type: ItemType = ItemType.PANEL
     orientation_policy: OrientationPolicy | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_source_dimensions(cls, data):
+        if not isinstance(data, dict):
+            return data
+        return _merge_legacy_and_generic_dimensions(
+            data, "source_dimensions", ("source_width", "source_height", "source_thickness")
+        )
 
     @property
     def resolved_orientation_policy(self) -> OrientationPolicy:
         return resolve_orientation_policy(self.item_type, self.orientation_policy)
 
+    @computed_field(description="mm; compatibilidad CUBOX 1.0, derivado de source_dimensions")  # type: ignore[misc]
     @property
-    def source_dimensions(self) -> Dimensions3D:
-        """Representacion generica canonica (Fase 3A) de las dimensiones de
-        ORIGEN (no de la caja ya orientada dx/dy/dz), derivada en el momento
-        a partir de source_width/source_height/source_thickness."""
-        return dimensions_from_legacy(self.source_width, self.source_height, self.source_thickness)
+    def source_width(self) -> float:
+        return legacy_from_dimensions(self.source_dimensions)[0]
+
+    @computed_field(description="mm; compatibilidad CUBOX 1.0, derivado de source_dimensions")  # type: ignore[misc]
+    @property
+    def source_height(self) -> float:
+        return legacy_from_dimensions(self.source_dimensions)[1]
+
+    @computed_field(description="mm; compatibilidad CUBOX 1.0, derivado de source_dimensions")  # type: ignore[misc]
+    @property
+    def source_thickness(self) -> float:
+        return legacy_from_dimensions(self.source_dimensions)[2]
 
 
 class UnloadedItem(BaseModel):
     id: str
     code: str
     description: str = ""
-    width: float
-    height: float
-    thickness: float
+    dimensions: Dimensions3D
     weight: float
     system: str = ""
     group: str = ""
@@ -365,13 +458,31 @@ class UnloadedItem(BaseModel):
     item_type: ItemType = ItemType.PANEL
     orientation_policy: OrientationPolicy | None = None
 
-    @property
-    def dimensions(self) -> Dimensions3D:
-        return dimensions_from_legacy(self.width, self.height, self.thickness)
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_dimensions(cls, data):
+        if not isinstance(data, dict):
+            return data
+        return _merge_legacy_and_generic_dimensions(data, "dimensions", ("width", "height", "thickness"))
 
     @property
     def resolved_orientation_policy(self) -> OrientationPolicy:
         return resolve_orientation_policy(self.item_type, self.orientation_policy)
+
+    @computed_field(description="mm; compatibilidad CUBOX 1.0, derivado de dimensions")  # type: ignore[misc]
+    @property
+    def width(self) -> float:
+        return legacy_from_dimensions(self.dimensions)[0]
+
+    @computed_field(description="mm; compatibilidad CUBOX 1.0, derivado de dimensions")  # type: ignore[misc]
+    @property
+    def height(self) -> float:
+        return legacy_from_dimensions(self.dimensions)[1]
+
+    @computed_field(description="mm; compatibilidad CUBOX 1.0, derivado de dimensions")  # type: ignore[misc]
+    @property
+    def thickness(self) -> float:
+        return legacy_from_dimensions(self.dimensions)[2]
 
 
 class PackingMetrics(BaseModel):
