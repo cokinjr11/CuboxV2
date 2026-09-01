@@ -23,6 +23,7 @@ from app.core.packer import compute_metrics
 from app.core.pdf_export import build_container_report_pdf, build_loading_guide_pdf, build_unloading_guide_pdf
 from app.core.reasons import UnloadedReason
 from app.core.reserved_zones import ReservedZone, central_aisle_zone
+from app.core.road_weight import evaluate_road_weight, weight_point_from_placed
 from app.core.sequence import (
     chunk_sequence,
     compute_load_sequence,
@@ -113,13 +114,20 @@ def _ensure_unlocked(piece: PlacedPiece) -> None:
         raise HTTPException(409, f"La pieza {piece.id} esta bloqueada (Locked). Desbloqueala primero.")
 
 
+def _road_weight_for(load_space, placed: list[PlacedPiece]):
+    """Metricas de distribucion de peso longitudinal (Fase 2B) -None si el
+    LoadSpace no tiene RoadWeightConfig habilitado (Container/Truck/Trailer
+    legacy, comportamiento Fase 2A intacto)."""
+    return evaluate_road_weight(load_space.road_weight_config, (weight_point_from_placed(p) for p in placed))
+
+
 def _refresh_derived(state: PackingResult) -> None:
-    state.metrics = compute_metrics(_current_state["load_space"], state.placed, state.unloaded)
-    state.load_sequence = compute_load_sequence(state.placed, _current_state["load_space"], _current_state["loading_anchor"])
+    load_space = _current_state["load_space"]
+    state.metrics = compute_metrics(load_space, state.placed, state.unloaded)
+    state.load_sequence = compute_load_sequence(state.placed, load_space, _current_state["loading_anchor"])
     state.unload_sequence = compute_unload_sequence(state.placed)
-    state.load_sequence_warnings = detect_operational_warnings(
-        state.placed, _current_state["load_space"], _current_state["loading_anchor"]
-    )
+    state.load_sequence_warnings = detect_operational_warnings(state.placed, load_space, _current_state["loading_anchor"])
+    state.road_weight = _road_weight_for(load_space, state.placed)
 
 
 def _window_item_from_placed(p: PlacedPiece) -> WindowItem:
@@ -198,7 +206,7 @@ def _resolve_load_space(request: PackRequest) -> LoadSpaceSpec:
     existiera."""
     if request.custom_load_space is not None:
         c = request.custom_load_space
-        return build_custom_load_space(c.name, c.load_space_type, c.length, c.width, c.height, c.max_weight)
+        return build_custom_load_space(c.name, c.load_space_type, c.length, c.width, c.height, c.max_weight, c.road_weight_config)
     if request.container_id is not None:
         try:
             return get_container(request.container_id)
@@ -225,11 +233,13 @@ def pack(request: PackRequest):
     )
 
     zones_out = _reserved_zones_out(zones)
+    best.road_weight = _road_weight_for(container, best.placed)
     for alt in alternatives:
         alt.result.load_sequence = compute_load_sequence(alt.result.placed, container, request.loading_anchor)
         alt.result.unload_sequence = compute_unload_sequence(alt.result.placed)
         alt.result.load_sequence_warnings = detect_operational_warnings(alt.result.placed, container, request.loading_anchor)
         alt.result.reserved_zones = zones_out
+        alt.result.road_weight = _road_weight_for(container, alt.result.placed)
 
     _current_state["result"] = best
     _current_state["load_space"] = container
@@ -295,6 +305,7 @@ def optimize_remaining(req: OptimizeRemainingRequest = OptimizeRemainingRequest(
     )
 
     zones_out = _reserved_zones_out(_reserved_zones())
+    best.road_weight = _road_weight_for(container, best.placed)
     for alt in alternatives:
         alt.result.load_sequence = compute_load_sequence(alt.result.placed, container, _current_state["loading_anchor"])
         alt.result.unload_sequence = compute_unload_sequence(alt.result.placed)
@@ -302,6 +313,7 @@ def optimize_remaining(req: OptimizeRemainingRequest = OptimizeRemainingRequest(
             alt.result.placed, container, _current_state["loading_anchor"]
         )
         alt.result.reserved_zones = zones_out
+        alt.result.road_weight = _road_weight_for(container, alt.result.placed)
 
     _current_state["history"].push(state.placed, state.unloaded)
     _current_state["result"] = best

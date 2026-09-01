@@ -11,9 +11,17 @@ menos a volumen/piso, para que el modo elegido realmente cambie el resultado.
 from collections import defaultdict
 
 from app.core.geometry import TOL
+from app.core.road_weight import evaluate_road_weight, weight_point_from_placed
 from app.models.schemas import OptimizationMode, PackingResult, PlacedPiece, WeightBalanceMode
 
 MIN_WALK_WIDTH_MM = 500.0
+
+ROAD_BALANCE_BONUS_WEIGHT = 0.05
+"""Bonus modesto (Fase 2B): nunca reemplaza el balance general existente ni
+los pesos base -solo desempata entre alternativas que YA son validas segun
+RoadWeightConfig (los limites duros se aplican en el packer/validacion
+final, no aca). 0 para cualquier LoadSpace sin RoadWeightConfig habilitado
+-no cambia el score de ningun escenario existente."""
 
 _BASE_WEIGHTS = {
     "loaded": 0.32,
@@ -157,6 +165,24 @@ def _compute_components(result: PackingResult, optimization_mode: OptimizationMo
     }
 
 
+def _road_balance_bonus(result: PackingResult, weight_balance_mode: WeightBalanceMode) -> float:
+    """0.0 salvo que el LoadSpace tenga RoadWeightConfig habilitado, Weight
+    Balance no sea Ignore, y la solucion ya sea valida por support -en ese
+    caso, premia levemente una utilizacion mas pareja entre los 2 supports."""
+    config = result.container.road_weight_config
+    if config is None or not config.enabled or weight_balance_mode == WeightBalanceMode.IGNORE:
+        return 0.0
+
+    road_weight = evaluate_road_weight(config, (weight_point_from_placed(p) for p in result.placed))
+    if road_weight is None or not road_weight.valid:
+        return 0.0
+
+    utilization_gap = abs(road_weight.supports[0].utilization_pct - road_weight.supports[1].utilization_pct) / 100
+    balance = 1 - min(1.0, utilization_gap)
+    multiplier = 2.0 if weight_balance_mode == WeightBalanceMode.IMPORTANT else 1.0
+    return ROAD_BALANCE_BONUS_WEIGHT * multiplier * balance
+
+
 def score_solution(
     result: PackingResult,
     optimization_mode: OptimizationMode,
@@ -164,7 +190,8 @@ def score_solution(
 ) -> float:
     weights = _weights_for(optimization_mode, weight_balance_mode)
     components = _compute_components(result, optimization_mode)
-    return sum(weights[k] * components[k] for k in weights)
+    base_score = sum(weights[k] * components[k] for k in weights)
+    return base_score + _road_balance_bonus(result, weight_balance_mode)
 
 
 def score_breakdown(

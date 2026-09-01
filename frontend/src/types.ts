@@ -29,6 +29,21 @@ export type LoadSpaceType = "container" | "truck" | "trailer" | "custom";
 
 export type LoadingOpeningType = "rear" | "side" | "top" | "multiple";
 
+// CUBOX 2.0 Fase 2B - distribucion de peso longitudinal (ver backend
+// app/core/road_weight.py). Solo mirrors de tipos; sin componentes de UI.
+export interface RoadSupport {
+  id: string;
+  name: string;
+  position_x_mm: number;
+  max_load_kg: number;
+  baseline_load_kg: number;
+}
+
+export interface RoadWeightConfig {
+  enabled: boolean;
+  supports: RoadSupport[];
+}
+
 export interface ContainerSpec {
   id: string;
   name: string;
@@ -40,6 +55,7 @@ export interface ContainerSpec {
   loading_opening_type?: LoadingOpeningType | null;
   rear_opening_width?: number | null;
   rear_opening_height?: number | null;
+  road_weight_config?: RoadWeightConfig | null;
 }
 
 // Mismo shape que ContainerSpec, nombre generico para CUBOX 2.0.
@@ -147,6 +163,27 @@ export interface ReservedZone {
   label: string;
 }
 
+export interface SupportLoadOut {
+  id: string;
+  name: string;
+  position_x_mm: number;
+  cargo_reaction_kg: number;
+  baseline_load_kg: number;
+  total_load_kg: number;
+  max_load_kg: number;
+  utilization_pct: number;
+  overloaded: boolean;
+  unstable: boolean;
+}
+
+export interface RoadWeightMetrics {
+  load_center_x_mm: number | null;
+  total_item_weight_kg: number;
+  supports: SupportLoadOut[];
+  valid: boolean;
+  errors: string[];
+}
+
 export interface PackingResult {
   container: ContainerSpec;
   placed: PlacedPiece[];
@@ -156,6 +193,7 @@ export interface PackingResult {
   unload_sequence: string[];
   load_sequence_warnings: string[];
   reserved_zones: ReservedZone[];
+  road_weight?: RoadWeightMetrics | null;
 }
 
 export interface AlternativeSolution {

@@ -2,9 +2,9 @@
 
 No reimplementa ninguna regla nueva -reutiliza exactamente los mismos checks
 que ya usan el packer y la edicion manual (geometry.py/orientation.py/
-reserved_zones.py) y los corre todos juntos sobre el estado activo, juntando
-una lista de errores legible. Si la lista viene vacia, el estado es
-exportable.
+reserved_zones.py/road_weight.py) y los corre todos juntos sobre el estado
+activo, juntando una lista de errores legible. Si la lista viene vacia, el
+estado es exportable.
 
 Tilt: no se valida porque el concepto no existe todavia en este proyecto (fue
 pospuesto explicitamente en V3 y no se construyo en V4 -ver el plan de V4).
@@ -13,6 +13,7 @@ pospuesto explicitamente en V3 y no se construyo en V4 -ver el plan de V4).
 from app.core.geometry import Box, boxes_overlap, boxes_too_close, check_stack_weight, check_support, within_container
 from app.core.orientation import is_valid_orientation, orientation_rejection_reason
 from app.core.reserved_zones import ReservedZone, zone_conflict
+from app.core.road_weight import evaluate_road_weight, weight_point_from_placed
 from app.models.schemas import ContainerSpec, PackingResult
 
 TOL = 1e-6
@@ -66,5 +67,12 @@ def validate_for_export(
     total_weight = sum(p.weight for p in placed)
     if total_weight > container.max_weight + TOL:
         errors.append(f"Peso total ({total_weight} kg) excede el maximo del contenedor ({container.max_weight} kg)")
+
+    # RoadWeightConfig (Fase 2B): max_weight NO reemplaza los limites por
+    # support -ambos deben pasar (ver core/road_weight.py). None/disabled ->
+    # sin efecto, ningun error se agrega (Container/Truck/Trailer legacy).
+    road_weight = evaluate_road_weight(container.road_weight_config, (weight_point_from_placed(p) for p in placed))
+    if road_weight is not None:
+        errors.extend(road_weight.errors)
 
     return errors

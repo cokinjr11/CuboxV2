@@ -11,7 +11,7 @@ romper nada de lo de aca."""
 
 from uuid import uuid4
 
-from app.models.schemas import LoadingOpeningType, LoadSpaceSpec, LoadSpaceType
+from app.models.schemas import LoadingOpeningType, LoadSpaceSpec, LoadSpaceType, RoadWeightConfig
 
 CONTAINER_CATALOG: dict[str, LoadSpaceSpec] = {
     "20ft_standard": LoadSpaceSpec(
@@ -82,11 +82,15 @@ def build_custom_load_space(
     width: float,
     height: float,
     max_weight: float,
+    road_weight_config: RoadWeightConfig | None = None,
 ) -> LoadSpaceSpec:
     """Construye un LoadSpaceSpec ad-hoc (tipicamente Truck/Trailer/Custom)
     con dimensiones definidas por el usuario. No se guarda en
     LOAD_SPACE_CATALOG -no hay persistencia de espacios de carga todavia; el
-    id generado solo necesita ser unico dentro del mismo request/response."""
+    id generado solo necesita ser unico dentro del mismo request/response.
+
+    road_weight_config es opcional (Fase 2B): None (default) preserva el
+    comportamiento de Fase 2A -sin distribucion de peso longitudinal."""
     return LoadSpaceSpec(
         id=f"custom-{uuid4().hex[:8]}",
         name=name,
@@ -95,4 +99,5 @@ def build_custom_load_space(
         width=width,
         height=height,
         max_weight=max_weight,
+        road_weight_config=road_weight_config,
     )

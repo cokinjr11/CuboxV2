@@ -1,7 +1,8 @@
 """Validacion de edicion manual (mover, insertar, rotar) sobre el cubicaje.
 
 Reutiliza exactamente las mismas reglas del algoritmo automatico
-(orientation.py y geometry.py) para que el usuario nunca pueda, editando a
+(orientation.py, geometry.py y, si el LoadSpace tiene RoadWeightConfig
+habilitado, road_weight.py) para que el usuario nunca pueda, editando a
 mano, violar ninguna restriccion que el algoritmo respeta. `validate_placement`
 es la unica fuente de verdad: se usa tanto para mover una pieza ya colocada
 como para insertar una pieza nueva desde Unloaded Items o para rotarla.
@@ -17,6 +18,7 @@ from app.core.geometry import (
 )
 from app.core.orientation import is_valid_orientation, orientation_rejection_reason
 from app.core.reserved_zones import ReservedZone, zone_conflict_with_clearance
+from app.core.road_weight import WeightPoint, evaluate_road_weight, weight_point_from_placed
 from app.models.schemas import ContainerSpec, OrientationPolicy, PlacedPiece
 
 
@@ -89,6 +91,12 @@ def validate_placement(
     ok, reason = check_stack_weight(candidate_box, weight, other_boxes, weights_by_id)
     if not ok:
         return False, reason
+
+    road_weight_points = [weight_point_from_placed(p) for p in other_pieces if p.id != piece_id]
+    road_weight_points.append(WeightPoint(weight=weight, x=x, dx=dx))
+    road_weight = evaluate_road_weight(container.road_weight_config, road_weight_points)
+    if road_weight is not None and not road_weight.valid:
+        return False, "; ".join(road_weight.errors)
 
     return True, ""
 

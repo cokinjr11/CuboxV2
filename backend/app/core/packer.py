@@ -15,6 +15,10 @@ Reglas que SIEMPRE se respetan (ver core/orientation.py y core/geometry.py):
   - Ninguna pieza invade una zona reservada (por ejemplo, el pasillo central).
   - Separacion minima (clearance) entre piezas del mismo nivel, si se configuro.
   - MaxStackWeight de la pieza soporte, si esta definido.
+  - Si container.road_weight_config esta habilitado (Fase 2B, ver
+    core/road_weight.py): el candidato no puede dejar ningun support
+    longitudinal sobrecargado ni con reaccion negativa. None/disabled -> sin
+    efecto (comportamiento identico a Fase 2A).
 
 `strategy` (ver core/strategies.py) decide el ORDEN en que se intentan colocar
 las piezas; el motor de colocacion en si es el mismo sin importar la
@@ -27,6 +31,7 @@ from dataclasses import dataclass
 from app.core.geometry import Box, check_stack_weight, check_support, has_clearance_conflict, has_collision, within_container
 from app.core.orientation import get_valid_orientations
 from app.core.reasons import UnloadedReason
+from app.core.road_weight import piece_center_x, would_exceed_support_limits
 from app.core.reserved_zones import ReservedZone, zone_conflict_with_clearance
 from app.core.strategies import build_sort_key
 from app.models.schemas import (
@@ -212,6 +217,12 @@ def pack_container(
     unloaded: list[UnloadedItem] = []
     weights_by_id: dict[str, float] = {}
     total_weight = 0.0
+    # Momento longitudinal acumulado (Sum(weight_i * center_x_i), coordenadas
+    # reales) para el chequeo incremental de RoadWeightConfig (Fase 2B, ver
+    # core/road_weight.py) -se mantiene junto a total_weight en vez de
+    # recalcularlo desde cero por cada candidato evaluado.
+    total_moment = 0.0
+    road_weight_config = container.road_weight_config
 
     candidates: list[_Candidate] = [_Candidate(0.0, 0.0, 0.0, None)]
 
@@ -248,6 +259,9 @@ def pack_container(
         placed_pieces.append(p)
         weights_by_id[p.id] = p.weight
         total_weight += p.weight
+        # p.x ya esta en coordenadas reales (no espejadas) -a diferencia de
+        # internal_x, que solo se usa para sembrar la busqueda geometrica.
+        total_moment += p.weight * piece_center_x(p.x, p.dx)
 
         new_candidates = [
             _Candidate(seed_box.max_x + clearance, seed_box.y, seed_box.z, None),
@@ -319,6 +333,19 @@ def pack_container(
                     if not ok:
                         continue
 
+                # Espejo de X: la busqueda interna siempre construye desde x=0
+                # hacia afuera; reflejarlo hace que lo primero colocado (el
+                # fondo del contenedor, x=0 en la busqueda interna) termine
+                # junto a la pared del fondo (x=length) y lo ultimo quede
+                # cerca de la puerta (x=0), que es como se carga en la
+                # realidad: del fondo hacia la puerta.
+                final_x = container.length - candidate_box.x - candidate_box.dx
+                candidate_center_x = piece_center_x(final_x, candidate_box.dx)
+                prospective_weight = total_weight + w.weight
+                prospective_moment = total_moment + w.weight * candidate_center_x
+                if would_exceed_support_limits(prospective_weight, prospective_moment, road_weight_config):
+                    continue
+
                 placed_boxes.append(candidate_box)
                 weights_by_id[candidate_box.id] = w.weight
                 placed_pieces.append(
@@ -333,13 +360,7 @@ def pack_container(
                         priority=w.priority,
                         max_stack_weight=w.max_stack_weight,
                         delivery_sequence=w.delivery_sequence,
-                        # Espejo de X: la busqueda interna siempre construye desde x=0
-                        # hacia afuera; reflejarlo hace que lo primero colocado (el
-                        # fondo del contenedor, x=0 en la busqueda interna) termine
-                        # junto a la pared del fondo (x=length) y lo ultimo quede
-                        # cerca de la puerta (x=0), que es como se carga en la
-                        # realidad: del fondo hacia la puerta.
-                        x=container.length - candidate_box.x - candidate_box.dx,
+                        x=final_x,
                         y=candidate_box.y,
                         z=candidate_box.z,
                         dx=candidate_box.dx,
@@ -353,7 +374,8 @@ def pack_container(
                         orientation_policy=w.orientation_policy,
                     )
                 )
-                total_weight += w.weight
+                total_weight = prospective_weight
+                total_moment = prospective_moment
 
                 # Con clearance > 0, un candidato pegado (gap=0) a esta pieza
                 # siempre violaria la separacion minima; se adelanta el hueco

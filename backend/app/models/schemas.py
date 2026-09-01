@@ -2,7 +2,7 @@
 
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ItemType(str, Enum):
@@ -108,16 +108,56 @@ class LoadingOpeningType(str, Enum):
     MULTIPLE = "multiple"
 
 
+class RoadSupport(BaseModel):
+    """Un punto/grupo de apoyo longitudinal de un vehiculo de carretera
+    (p.ej. Front Axle Group, Rear Axle Group, o Kingpin/Trailer Axle Group en
+    un semirremolque). Generico a proposito: el mismo modelo sirve para
+    Truck y Trailer, sin dos motores de fisica distintos (ver
+    core/road_weight.py)."""
+
+    id: str
+    name: str
+    position_x_mm: float = Field(
+        description="Posicion longitudinal del support en el mismo eje X que PlacedPiece.x "
+        "(x=0 es la puerta/abertura de carga, x=LoadSpaceSpec.length es la pared del fondo)"
+    )
+    max_load_kg: float = Field(gt=0, description="Limite CONFIGURADO -nunca un valor legal/de fabricante asumido")
+    baseline_load_kg: float = Field(default=0.0, ge=0, description="Carga del vehiculo ya presente en este support antes de la carga de items")
+
+
+class RoadWeightConfig(BaseModel):
+    """Configuracion opcional de distribucion de peso longitudinal (Fase 2B).
+    Si enabled=False (o el campo es None en LoadSpaceSpec), no afecta en nada
+    el empaque -comportamiento identico a Fase 2A. Cuando enabled=True, se
+    exige exactamente 2 supports (modelo estatico de 2 apoyos, ver
+    core/road_weight.py); mas de 2 requeriria un modelo de distribucion
+    multi-eje que este modulo NO intenta adivinar."""
+
+    enabled: bool = False
+    supports: list[RoadSupport] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_supports(self) -> "RoadWeightConfig":
+        if not self.enabled:
+            return self
+        if len(self.supports) != 2:
+            raise ValueError(
+                f"RoadWeightConfig.enabled requiere exactamente 2 supports (modelo estatico de 2 apoyos); "
+                f"se recibieron {len(self.supports)}"
+            )
+        a, b = self.supports
+        if abs(a.position_x_mm - b.position_x_mm) < 1e-6:
+            raise ValueError("RoadWeightConfig: los 2 supports no pueden tener la misma position_x_mm")
+        return self
+
+
 class LoadSpaceSpec(BaseModel):
     """Espacio de carga generico: contenedor, camion, trailer o
     personalizado. Generalizacion de lo que antes era ContainerSpec -mismos
     campos y mismo comportamiento (ContainerSpec es un alias de este modelo,
     igual patron que WindowItem/LoadItem). Todo ContainerSpec existente
-    sigue siendo valido: load_space_type default = CONTAINER.
-
-    Punto de extension para Fase 2B (ejes/distribucion de peso de vehiculos
-    de carretera): esos campos no existen todavia -se agregaran a este
-    mismo modelo cuando corresponda, sin otro refactor destructivo."""
+    sigue siendo valido: load_space_type default = CONTAINER,
+    road_weight_config default = None (sin efecto en el empaque)."""
 
     id: str
     name: str
@@ -131,9 +171,39 @@ class LoadSpaceSpec(BaseModel):
     )
     rear_opening_width: float | None = Field(default=None, description="mm; None = sin dato conocido")
     rear_opening_height: float | None = Field(default=None, description="mm; None = sin dato conocido")
+    road_weight_config: RoadWeightConfig | None = Field(
+        default=None, description="None = sin distribucion de peso longitudinal (comportamiento Fase 2A)"
+    )
 
 
 ContainerSpec = LoadSpaceSpec
+
+
+class SupportLoadOut(BaseModel):
+    """Metricas de un RoadSupport para un cubicaje dado (ver core/road_weight.py:evaluate_road_weight)."""
+
+    id: str
+    name: str
+    position_x_mm: float
+    cargo_reaction_kg: float
+    baseline_load_kg: float
+    total_load_kg: float
+    max_load_kg: float
+    utilization_pct: float
+    overloaded: bool
+    unstable: bool = Field(description="True si la reaccion calculada es negativa mas alla de la tolerancia numerica")
+
+
+class RoadWeightMetrics(BaseModel):
+    """Resultado de evaluar RoadWeightConfig contra un conjunto de piezas
+    cargadas. None en PackingResult cuando el LoadSpace no tiene
+    road_weight_config habilitado."""
+
+    load_center_x_mm: float | None = Field(default=None, description="Centro de carga longitudinal; None si no hay piezas cargadas")
+    total_item_weight_kg: float
+    supports: list[SupportLoadOut]
+    valid: bool
+    errors: list[str] = []
 
 
 class CustomLoadSpaceRequest(BaseModel):
@@ -149,6 +219,9 @@ class CustomLoadSpaceRequest(BaseModel):
     width: float = Field(gt=0, description="mm")
     height: float = Field(gt=0, description="mm")
     max_weight: float = Field(gt=0, description="kg")
+    road_weight_config: RoadWeightConfig | None = Field(
+        default=None, description="Fase 2B: distribucion de peso longitudinal, opcional"
+    )
 
 
 class OptimizationMode(str, Enum):
@@ -280,6 +353,9 @@ class PackingResult(BaseModel):
         description="Operational loadability warnings: piezas sin ninguna referencia fisica (piso/fondo/lateral/pieza ya cargada) en el punto en que la secuencia las carga.",
     )
     reserved_zones: list[ReservedZoneOut] = []
+    road_weight: RoadWeightMetrics | None = Field(
+        default=None, description="None si el LoadSpace no tiene RoadWeightConfig habilitado (Fase 2A/legacy)"
+    )
 
 
 class AlternativeSolution(BaseModel):
