@@ -57,9 +57,19 @@ function getStoredTheme(): Theme {
   return stored === "light" ? "light" : "dark";
 }
 
-function App() {
+// initialItems/initialContainerId son opcionales y aditivos (CUBOX 2.0 Fase
+// 4): permiten que el New Load Plan Wizard entregue items ya importados al
+// abrir el workspace, sin cambiar en nada el comportamiento existente
+// cuando se omiten (<App /> sin props sigue siendo exactamente el flujo
+// legacy: arranca vacio y el usuario importa/elige el contenedor a mano).
+interface AppProps {
+  initialItems?: WindowItem[];
+  initialContainerId?: string;
+}
+
+function App({ initialItems, initialContainerId }: AppProps = {}) {
   const [containers, setContainers] = useState<ContainerSpec[]>([]);
-  const [items, setItems] = useState<WindowItem[]>([]);
+  const [items, setItems] = useState<WindowItem[]>(initialItems ?? []);
   const [selectedContainerId, setSelectedContainerId] = useState("");
   const [optimizationMode, setOptimizationMode] = useState<OptimizationMode>("best_space");
   const [enableCentralAisle, setEnableCentralAisle] = useState(false);
@@ -107,9 +117,11 @@ function App() {
     fetchContainers()
       .then((list) => {
         setContainers(list);
-        if (list.length > 0) setSelectedContainerId(list[0].id);
+        const preferred = initialContainerId && list.some((c) => c.id === initialContainerId) ? initialContainerId : list[0]?.id;
+        if (preferred) setSelectedContainerId(preferred);
       })
       .catch(() => setError("No se pudo conectar con el backend (http://localhost:8000)."));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function handleFileSelected(file: File) {

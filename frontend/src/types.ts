@@ -6,6 +6,16 @@ export type ItemType = "box" | "pallet" | "panel" | "custom";
 
 export type OrientationPolicy = "free" | "upright" | "panel_edge_only" | "fixed";
 
+// CUBOX 2.0 Fase 3A/3A.1 - representacion generica canonica (length/width/
+// height); width/height/thickness siguen siendo los campos legacy que ya
+// consume el resto del frontend, derivados de esta (ver backend
+// app/models/schemas.py:legacy_from_dimensions).
+export interface Dimensions3D {
+  length: number;
+  width: number;
+  height: number;
+}
+
 export interface WindowItem {
   code: string;
   description: string;
@@ -22,6 +32,7 @@ export interface WindowItem {
   delivery_sequence: number | null;
   item_type?: ItemType;
   orientation_policy?: OrientationPolicy | null;
+  dimensions?: Dimensions3D;
 }
 
 // CUBOX 2.0 - generalizacion de ContainerSpec (ver backend app/models/schemas.py).
@@ -211,4 +222,35 @@ export interface OptimizeResponse {
 export interface MoveValidationResult {
   valid: boolean;
   reason: string;
+}
+
+// CUBOX 2.0 Fase 3B - import Excel profile-aware (ver backend
+// app/models/import_schemas.py). No relacionado con el importador legacy
+// (WindowItem[] via /api/import-excel), que sigue igual.
+export type ImportIssueSeverity = "error" | "warning";
+
+export interface ImportIssue {
+  row: number | null;
+  column: string | null;
+  code: string;
+  message: string;
+  severity: ImportIssueSeverity;
+}
+
+export interface ImportSummary {
+  total_rows: number;
+  valid_rows: number;
+  invalid_rows: number;
+  total_units: number;
+  total_weight: number;
+  unique_codes: number;
+}
+
+export interface ImportPreview {
+  profile: ItemType;
+  is_valid: boolean;
+  items: WindowItem[];
+  errors: ImportIssue[];
+  warnings: ImportIssue[];
+  summary: ImportSummary;
 }

@@ -1,7 +1,10 @@
 import axios from "axios";
 import type {
   ContainerSpec,
+  ImportPreview,
+  ItemType,
   LoadingAnchor,
+  LoadSpaceSpec,
   MoveValidationResult,
   OptimizationMode,
   OptimizeResponse,
@@ -29,6 +32,30 @@ export async function importExcel(file: File): Promise<WindowItem[]> {
   const r = await api.post<WindowItem[]>("/import-excel", form, {
     headers: { "Content-Type": "multipart/form-data" },
   });
+  return r.data;
+}
+
+// CUBOX 2.0 Fase 4 - Load Space generico (containers hoy; Truck/Trailer sin
+// presets todavia, ver backend app/models/containers.py).
+export async function fetchLoadSpaces(): Promise<LoadSpaceSpec[]> {
+  const r = await api.get<LoadSpaceSpec[]>("/load-spaces");
+  return r.data;
+}
+
+// Import Excel profile-aware (Fase 3B). No reemplaza importExcel/import-excel
+// (legacy) -son 2 flujos independientes.
+export async function importItemsExcel(file: File, profile: ItemType): Promise<ImportPreview> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("profile", profile);
+  const r = await api.post<ImportPreview>("/import-items-excel", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return r.data;
+}
+
+export async function downloadImportTemplate(profile: ItemType): Promise<Blob> {
+  const r = await api.get(`/import-template/${profile}`, { responseType: "blob" });
   return r.data;
 }
 
