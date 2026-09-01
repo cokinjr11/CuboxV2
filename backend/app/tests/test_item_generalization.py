@@ -21,6 +21,7 @@ from app.models.schemas import (
     PackingResult,
     PlacedPiece,
     WindowItem,
+    dimensions_from_legacy,
 )
 
 CONTAINER = get_container("40ft_standard")
@@ -41,7 +42,7 @@ def test_window_item_is_load_item_alias_with_legacy_default():
 
 
 def test_free_box_has_six_orientations():
-    orientations = get_valid_orientations(600, 400, 300, OrientationPolicy.FREE)
+    orientations = get_valid_orientations(dimensions_from_legacy(600, 400, 300), OrientationPolicy.FREE)
     assert len(orientations) == 6
     combos = {(o.dx, o.dy, o.dz) for o in orientations}
     assert len(combos) == 6
@@ -50,8 +51,9 @@ def test_free_box_has_six_orientations():
 
 
 def test_free_box_accepts_any_axis_aligned_orientation():
+    dims = dimensions_from_legacy(600, 400, 300)
     for dx, dy, dz in [(600, 400, 300), (400, 600, 300), (300, 400, 600), (400, 300, 600)]:
-        assert is_valid_orientation(600, 400, 300, dx, dy, dz, OrientationPolicy.FREE) is True
+        assert is_valid_orientation(dims, dx, dy, dz, OrientationPolicy.FREE) is True
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +62,8 @@ def test_free_box_accepts_any_axis_aligned_orientation():
 
 
 def test_upright_box_has_two_floor_rotations():
-    orientations = get_valid_orientations(width=600, height=300, thickness=400, policy=OrientationPolicy.UPRIGHT)
+    dims = dimensions_from_legacy(width=600, height=300, thickness=400)
+    orientations = get_valid_orientations(dims, policy=OrientationPolicy.UPRIGHT)
     assert len(orientations) == 2
     for o in orientations:
         assert o.dz == 300
@@ -68,10 +71,11 @@ def test_upright_box_has_two_floor_rotations():
 
 
 def test_upright_box_rejects_lying_on_its_side():
-    assert is_valid_orientation(600, 300, 400, dx=600, dy=400, dz=300, policy=OrientationPolicy.UPRIGHT) is True
-    assert is_valid_orientation(600, 300, 400, dx=400, dy=600, dz=300, policy=OrientationPolicy.UPRIGHT) is True
-    assert is_valid_orientation(600, 300, 400, dx=300, dy=400, dz=600, policy=OrientationPolicy.UPRIGHT) is False
-    assert is_valid_orientation(600, 300, 400, dx=400, dy=300, dz=600, policy=OrientationPolicy.UPRIGHT) is False
+    dims = dimensions_from_legacy(600, 300, 400)
+    assert is_valid_orientation(dims, dx=600, dy=400, dz=300, policy=OrientationPolicy.UPRIGHT) is True
+    assert is_valid_orientation(dims, dx=400, dy=600, dz=300, policy=OrientationPolicy.UPRIGHT) is True
+    assert is_valid_orientation(dims, dx=300, dy=400, dz=600, policy=OrientationPolicy.UPRIGHT) is False
+    assert is_valid_orientation(dims, dx=400, dy=300, dz=600, policy=OrientationPolicy.UPRIGHT) is False
 
 
 # ---------------------------------------------------------------------------
@@ -80,16 +84,17 @@ def test_upright_box_rejects_lying_on_its_side():
 
 
 def test_pallet_like_item_never_stands_on_edge():
-    valid_orientations = get_valid_orientations(width=1200, height=150, thickness=1000, policy=OrientationPolicy.UPRIGHT)
+    dims = dimensions_from_legacy(width=1200, height=150, thickness=1000)
+    valid_orientations = get_valid_orientations(dims, policy=OrientationPolicy.UPRIGHT)
     assert len(valid_orientations) == 2
     for o in valid_orientations:
         assert o.dz == 150
         assert {o.dx, o.dy} == {1200, 1000}
 
-    assert is_valid_orientation(1200, 150, 1000, dx=1200, dy=1000, dz=150, policy=OrientationPolicy.UPRIGHT) is True
-    assert is_valid_orientation(1200, 150, 1000, dx=1000, dy=1200, dz=150, policy=OrientationPolicy.UPRIGHT) is True
-    assert is_valid_orientation(1200, 150, 1000, dx=150, dy=1000, dz=1200, policy=OrientationPolicy.UPRIGHT) is False
-    assert is_valid_orientation(1200, 150, 1000, dx=1000, dy=150, dz=1200, policy=OrientationPolicy.UPRIGHT) is False
+    assert is_valid_orientation(dims, dx=1200, dy=1000, dz=150, policy=OrientationPolicy.UPRIGHT) is True
+    assert is_valid_orientation(dims, dx=1000, dy=1200, dz=150, policy=OrientationPolicy.UPRIGHT) is True
+    assert is_valid_orientation(dims, dx=150, dy=1000, dz=1200, policy=OrientationPolicy.UPRIGHT) is False
+    assert is_valid_orientation(dims, dx=1000, dy=150, dz=1200, policy=OrientationPolicy.UPRIGHT) is False
 
 
 # ---------------------------------------------------------------------------
@@ -107,9 +112,7 @@ def test_packer_preserves_glass_face_rule_for_legacy_window_items():
         assert p.item_type == ItemType.PANEL
         assert p.resolved_orientation_policy == OrientationPolicy.PANEL_EDGE_ONLY
         assert p.dz != p.source_thickness
-        assert is_valid_orientation(
-            p.source_width, p.source_height, p.source_thickness, p.dx, p.dy, p.dz, p.resolved_orientation_policy
-        )
+        assert is_valid_orientation(p.source_dimensions, p.dx, p.dy, p.dz, p.resolved_orientation_policy)
 
 
 # ---------------------------------------------------------------------------

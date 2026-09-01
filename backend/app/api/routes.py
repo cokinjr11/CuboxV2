@@ -538,7 +538,7 @@ def insert_piece(req: InsertPieceRequest):
     matching = next(
         (
             o
-            for o in get_valid_orientations(item.width, item.height, item.thickness, item.resolved_orientation_policy)
+            for o in get_valid_orientations(item.dimensions, item.resolved_orientation_policy)
             if o.dx == req.dx and o.dy == req.dy and o.dz == req.dz
         ),
         None,
@@ -584,9 +584,7 @@ def _change_orientation(req: RotatePieceRequest, orientation_fn, action: str) ->
     _ensure_unlocked(piece)
 
     policy = piece.resolved_orientation_policy
-    target = orientation_fn(
-        piece.source_width, piece.source_height, piece.source_thickness, piece.dx, piece.dy, piece.dz, policy
-    )
+    target = orientation_fn(piece.source_dimensions, piece.dx, piece.dy, piece.dz, policy)
     if target is None:
         raise HTTPException(409, f"Orientacion actual no reconocida, no se puede {action}")
 

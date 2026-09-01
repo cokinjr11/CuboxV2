@@ -36,7 +36,7 @@ def test_every_strategy_produces_a_valid_solution():
 
         for piece in result.placed:
             assert is_valid_orientation(
-                piece.source_width, piece.source_height, piece.source_thickness, piece.dx, piece.dy, piece.dz
+                piece.source_dimensions, piece.dx, piece.dy, piece.dz
             ), f"Estrategia {strategy} produjo una orientacion invalida"
 
         boxes = [Box(p.id, p.x, p.y, p.z, p.dx, p.dy, p.dz, p.stackable) for p in result.placed]

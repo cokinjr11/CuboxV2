@@ -54,6 +54,64 @@ def resolve_orientation_policy(item_type: ItemType, orientation_policy: Orientat
     return DEFAULT_ORIENTATION_POLICY_BY_ITEM_TYPE[item_type]
 
 
+class Dimensions3D(BaseModel):
+    """Representacion generica CANONICA de las 3 dimensiones fisicas de un
+    item (CUBOX 2.0, Fase 3A). `length`/`width`/`height` son etiquetas
+    neutras: su significado fisico (cual es "vertical", cual es "la cara")
+    lo determina ItemType + OrientationPolicy (y, para PANEL,
+    PanelDimensionMapping) en core/orientation.py -nunca una heuristica
+    geometrica como min(length, width, height).
+
+    Nunca se guarda como campo independiente en LoadItem/PlacedPiece/
+    UnloadedItem: siempre se deriva en el momento (ver dimensions_from_legacy
+    y las properties `dimensions`/`source_dimensions`) a partir de los
+    campos legacy width/height/thickness, que siguen siendo la UNICA fuente
+    de verdad almacenada y serializada. Asi no puede haber 2 representaciones
+    independientes que se desincronicen."""
+
+    length: float = Field(gt=0, description="mm")
+    width: float = Field(gt=0, description="mm")
+    height: float = Field(gt=0, description="mm")
+
+
+def dimensions_from_legacy(width: float, height: float, thickness: float) -> Dimensions3D:
+    """Mapeo LEGACY -> GENERICO (Fase 3A): fijo, posicional, y el MISMO para
+    cualquier ItemType (no hay una version distinta para PANEL vs BOX).
+
+        legacy.width     -> generic.length
+        legacy.thickness -> generic.width
+        legacy.height    -> generic.height
+
+    No es una reinterpretacion fisica -es una correspondencia arbitraria
+    pero deterministica entre 2 representaciones planas de 3 numeros. Los
+    items genericos (BOX/PALLET/CUSTOM) usan estos 3 valores con su
+    significado natural (UPRIGHT: `height` permanece vertical, igual
+    criterio que ya se usaba desde la Fase 2B). Para PANEL,
+    PANEL_DIMENSION_MAPPING reinterpreta estos mismos 3 valores para
+    reproducir, sin ninguna heuristica, la regla original de vidrio (cara =
+    legacy.width x legacy.height, thickness = legacy.thickness) -ver
+    core/orientation.py."""
+    return Dimensions3D(length=width, width=thickness, height=height)
+
+
+class PanelDimensionMapping(BaseModel):
+    """Que 2 ejes de Dimensions3D forman la cara grande (panel/vidrio) y
+    cual es el eje de thickness -unico mecanismo para interpretar
+    OrientationPolicy.PANEL_EDGE_ONLY sobre dimensiones genericas. Explicito
+    a proposito (Fase 3A): jamas se infiere por heuristica (p.ej. "la
+    dimension mas chica es el thickness")."""
+
+    face_axes: tuple[str, str]
+    thickness_axis: str
+
+
+PANEL_DIMENSION_MAPPING = PanelDimensionMapping(face_axes=("length", "height"), thickness_axis="width")
+"""Unico perfil de panel que existe hoy (ventanas legacy). Combinado con
+dimensions_from_legacy(), reproduce EXACTAMENTE la regla original: cara =
+legacy.width x legacy.height, thickness = legacy.thickness -ver
+core/orientation.py:_panel_edge_only_orientations."""
+
+
 class LoadItem(BaseModel):
     """Una fila de carga a planificar (una linea de producto, con cantidad).
 
@@ -84,6 +142,12 @@ class LoadItem(BaseModel):
     @property
     def resolved_orientation_policy(self) -> OrientationPolicy:
         return resolve_orientation_policy(self.item_type, self.orientation_policy)
+
+    @property
+    def dimensions(self) -> Dimensions3D:
+        """Representacion generica canonica (Fase 3A), derivada en el
+        momento -nunca almacenada- a partir de width/height/thickness."""
+        return dimensions_from_legacy(self.width, self.height, self.thickness)
 
 
 WindowItem = LoadItem
@@ -274,6 +338,13 @@ class PlacedPiece(BaseModel):
     def resolved_orientation_policy(self) -> OrientationPolicy:
         return resolve_orientation_policy(self.item_type, self.orientation_policy)
 
+    @property
+    def source_dimensions(self) -> Dimensions3D:
+        """Representacion generica canonica (Fase 3A) de las dimensiones de
+        ORIGEN (no de la caja ya orientada dx/dy/dz), derivada en el momento
+        a partir de source_width/source_height/source_thickness."""
+        return dimensions_from_legacy(self.source_width, self.source_height, self.source_thickness)
+
 
 class UnloadedItem(BaseModel):
     id: str
@@ -293,6 +364,10 @@ class UnloadedItem(BaseModel):
     reason_code: str
     item_type: ItemType = ItemType.PANEL
     orientation_policy: OrientationPolicy | None = None
+
+    @property
+    def dimensions(self) -> Dimensions3D:
+        return dimensions_from_legacy(self.width, self.height, self.thickness)
 
     @property
     def resolved_orientation_policy(self) -> OrientationPolicy:

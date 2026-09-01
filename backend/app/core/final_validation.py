@@ -42,7 +42,7 @@ def validate_for_export(
             errors.append(f"{p.id} esta fuera de los limites del contenedor")
 
         policy = p.resolved_orientation_policy
-        if not is_valid_orientation(p.source_width, p.source_height, p.source_thickness, p.dx, p.dy, p.dz, policy):
+        if not is_valid_orientation(p.source_dimensions, p.dx, p.dy, p.dz, policy):
             errors.append(f"{p.id}: {orientation_rejection_reason(policy)}")
 
         support_ok, support_reason = check_support(box, boxes)

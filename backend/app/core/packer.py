@@ -86,7 +86,7 @@ def _expand_instances(items: list[WindowItem], reserved_ids: set[str] | None = N
 
 
 def _fits_in_container_at_all(item: WindowItem, container: ContainerSpec) -> bool:
-    for o in get_valid_orientations(item.width, item.height, item.thickness, item.resolved_orientation_policy):
+    for o in get_valid_orientations(item.dimensions, item.resolved_orientation_policy):
         if o.dx <= container.length + TOL and o.dy <= container.width + TOL and o.dz <= container.height + TOL:
             return True
     return False
@@ -300,7 +300,7 @@ def pack_container(
         for cand in candidates:
             if placed_ok:
                 break
-            for o in get_valid_orientations(w.width, w.height, w.thickness, w.resolved_orientation_policy):
+            for o in get_valid_orientations(w.dimensions, w.resolved_orientation_policy):
                 candidate_box = Box(
                     id=inst.instance_id,
                     x=cand.x,

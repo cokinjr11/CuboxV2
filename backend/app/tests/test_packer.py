@@ -28,7 +28,7 @@ def test_pack_single_piece_fits_and_valid_orientation():
     result = pack_container([make_window(quantity=1)], container)
     assert result.metrics.loaded_pieces == 1
     piece = result.placed[0]
-    assert is_valid_orientation(piece.source_width, piece.source_height, piece.source_thickness, piece.dx, piece.dy, piece.dz)
+    assert is_valid_orientation(piece.source_dimensions, piece.dx, piece.dy, piece.dz)
 
 
 def test_pack_never_produces_forbidden_orientation():
@@ -36,9 +36,7 @@ def test_pack_never_produces_forbidden_orientation():
     result = pack_container([make_window(quantity=30)], container)
     assert len(result.placed) > 0
     for piece in result.placed:
-        assert is_valid_orientation(
-            piece.source_width, piece.source_height, piece.source_thickness, piece.dx, piece.dy, piece.dz
-        )
+        assert is_valid_orientation(piece.source_dimensions, piece.dx, piece.dy, piece.dz)
         assert piece.dz != piece.source_thickness
 
 

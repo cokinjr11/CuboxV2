@@ -19,7 +19,7 @@ from app.core.geometry import (
 from app.core.orientation import is_valid_orientation, orientation_rejection_reason
 from app.core.reserved_zones import ReservedZone, zone_conflict_with_clearance
 from app.core.road_weight import WeightPoint, evaluate_road_weight, weight_point_from_placed
-from app.models.schemas import ContainerSpec, OrientationPolicy, PlacedPiece
+from app.models.schemas import ContainerSpec, OrientationPolicy, PlacedPiece, dimensions_from_legacy
 
 
 def validate_placement(
@@ -44,7 +44,8 @@ def validate_placement(
 ) -> tuple[bool, str]:
     reserved_zones = reserved_zones or []
 
-    if not is_valid_orientation(width, height, thickness, dx, dy, dz, orientation_policy):
+    dims = dimensions_from_legacy(width, height, thickness)
+    if not is_valid_orientation(dims, dx, dy, dz, orientation_policy):
         reason = orientation_rejection_reason(orientation_policy)
         return False, reason[0].upper() + reason[1:]
 
