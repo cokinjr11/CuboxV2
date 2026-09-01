@@ -38,10 +38,10 @@ export function SettingsModal({ theme, onThemeChange, onClose }: Props) {
             <input type="checkbox" className="toggle-switch" checked={false} disabled title="No disponible" />
           </div>
           <p className="hint">
-            Esta regla es un limite fisico de seguridad: una ventana nunca se apoya sobre su cara de vidrio (Width x
-            Height). Hoy no se puede desactivar porque todo lo que maneja el programa son ventanas de vidrio. Este
-            interruptor queda preparado para el dia que el programa maneje otros tipos de piezas que no tengan esa
-            restriccion -por ahora se mantiene siempre activo y no editable.
+            Esta regla (Panel Edge Only) es especifica de items tipo Panel/ventana: la cara Width x Height nunca
+            puede quedar como base. Otros tipos de carga (Box, Pallet, Custom) ya usan reglas de orientacion propias
+            (Free, Upright, Fixed), configurables desde Handling Rules en el New Load Plan Wizard -este interruptor
+            queda siempre activo y no editable porque afecta unicamente a los items Panel.
           </p>
         </div>
       </div>

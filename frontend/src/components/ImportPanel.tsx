@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import type { ContainerSpec, LoadingAnchor, OptimizationMode, WeightBalanceMode, WindowItem } from "../types";
+import type { ContainerSpec, CustomLoadSpaceRequestBody, LoadingAnchor, OptimizationMode, WeightBalanceMode, WindowItem } from "../types";
 
 const CLEARANCE_OPTIONS = [0, 5, 10, 20];
 
@@ -18,6 +18,10 @@ interface Props {
   containers: ContainerSpec[];
   items: WindowItem[];
   selectedContainerId: string;
+  /** Fase 5: cuando esta presente (Truck/Trailer/Custom Container definido
+   * en el wizard), reemplaza el dropdown de contenedores por un valor de
+   * solo lectura -es la unica fuente de verdad del Load Space activo. */
+  customLoadSpace?: CustomLoadSpaceRequestBody;
   optimizationMode: OptimizationMode;
   enableCentralAisle: boolean;
   aisleWidthMm: number;
@@ -41,6 +45,7 @@ export function ImportPanel({
   containers,
   items,
   selectedContainerId,
+  customLoadSpace,
   optimizationMode,
   enableCentralAisle,
   aisleWidthMm,
@@ -88,14 +93,23 @@ export function ImportPanel({
         </p>
       )}
 
-      <h2>2. Contenedor</h2>
-      <select value={selectedContainerId} onChange={(e) => onContainerChange(e.target.value)}>
-        {containers.map((c) => (
-          <option key={c.id} value={c.id}>
-            {c.name}
-          </option>
-        ))}
-      </select>
+      <h2>2. Load Space</h2>
+      {customLoadSpace ? (
+        <p className="hint">
+          {customLoadSpace.name} ({customLoadSpace.load_space_type}) — {customLoadSpace.length} × {customLoadSpace.width} ×{" "}
+          {customLoadSpace.height} mm, max {customLoadSpace.max_weight} kg
+          <br />
+          Defined in the New Load Plan Wizard.
+        </p>
+      ) : (
+        <select value={selectedContainerId} onChange={(e) => onContainerChange(e.target.value)}>
+          {containers.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+      )}
 
       <h2>3. Optimization Mode</h2>
       <div className="radio-group">

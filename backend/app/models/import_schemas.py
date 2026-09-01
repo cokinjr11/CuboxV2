@@ -8,7 +8,23 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
-from app.models.schemas import ItemType, LoadItem
+from app.models.schemas import ItemType, LoadItem, OrientationPolicy
+
+
+class ImportDefaults(BaseModel):
+    """Defaults del PLAN (elegidos en el New Load Plan Wizard, Handling
+    Rules), distintos del default de SISTEMA hardcoded en PROFILE_SPECS
+    (ver core/import_items.py). Precedencia (Fase 5, seccion 4):
+
+        valor explicito de Excel  >  ImportDefaults (plan)  >  default de sistema
+
+    Ambos campos son opcionales: None significa "sin default de plan", en
+    cuyo caso se cae directo al default de sistema de siempre -asi un
+    request que no manda ImportDefaults en absoluto se comporta identico a
+    antes de que este concepto existiera."""
+
+    orientation_policy: OrientationPolicy | None = None
+    stackable: bool | None = None
 
 
 class ImportIssueSeverity(str, Enum):

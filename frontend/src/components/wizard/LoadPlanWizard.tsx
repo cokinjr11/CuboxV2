@@ -111,7 +111,16 @@ export function LoadPlanWizard({ onCancel, onComplete }: Props) {
           />
         )}
         {STEPS[stepIndex].key === "import" && itemType && (
-          <ImportStep profile={itemType} value={draft.importPreview} onChange={(importPreview) => patchDraft({ importPreview })} />
+          <ImportStep
+            profile={itemType}
+            value={draft.importPreview}
+            onChange={(importPreview) => patchDraft({ importPreview })}
+            defaults={
+              draft.handlingRules
+                ? { orientationPolicy: draft.handlingRules.orientationPolicy, stackable: draft.handlingRules.defaultStackable }
+                : undefined
+            }
+          />
         )}
         {STEPS[stepIndex].key === "review" && <ReviewStep draft={draft} catalog={catalog} />}
       </div>

@@ -115,6 +115,7 @@ export interface PlacedPiece {
   source_thickness: number;
   item_type?: ItemType;
   orientation_policy?: OrientationPolicy | null;
+  source_dimensions?: Dimensions3D;
 }
 
 export interface UnloadedItem {
@@ -135,6 +136,7 @@ export interface UnloadedItem {
   reason_code: string;
   item_type?: ItemType;
   orientation_policy?: OrientationPolicy | null;
+  dimensions?: Dimensions3D;
 }
 
 export interface PackingMetrics {
@@ -253,4 +255,46 @@ export interface ImportPreview {
   errors: ImportIssue[];
   warnings: ImportIssue[];
   summary: ImportSummary;
+}
+
+// CUBOX 2.0 Fase 5 - defaults del PLAN (Handling Rules del wizard) para el
+// import profile-aware. Ver backend app/models/import_schemas.py:
+// ImportDefaults. Precedencia: valor explicito de Excel > este default >
+// default de sistema (nunca al reves).
+export interface ImportDefaults {
+  orientationPolicy?: OrientationPolicy;
+  stackable?: boolean;
+}
+
+// Espacio de carga definido a mano (Truck/Trailer/Custom Container), tal
+// como lo espera POST /api/pack en `custom_load_space` (ver backend
+// app/models/schemas.py:CustomLoadSpaceRequest). No confundir con
+// LoadSpaceSpec (la salida ya resuelta del backend).
+export interface CustomLoadSpaceRequestBody {
+  name: string;
+  load_space_type: LoadSpaceType;
+  length: number;
+  width: number;
+  height: number;
+  max_weight: number;
+  // Fase 5, seccion 26: el wizard todavia no tiene UI para configurar Road
+  // Supports -queda undefined salvo que un paso futuro lo complete. El
+  // backend ya lo soporta desde la Fase 2B (comportamiento normal si es None).
+  road_weight_config?: RoadWeightConfig;
+}
+
+// CUBOX 2.0 Fase 5 - limite estructurado wizard -> workspace (App.tsx),
+// reemplaza los 2 props sueltos initialItems/initialContainerId de la Fase
+// 4. Un solo objeto opcional: si se omite, <App/> arranca exactamente
+// igual que el flujo legacy (Open Legacy Workspace).
+export interface InitialWorkspaceConfig {
+  items: WindowItem[];
+  loadSpace: { containerId: string } | { customLoadSpace: CustomLoadSpaceRequestBody };
+  handlingRules: {
+    enableCentralAisle: boolean;
+    aisleWidthMm: number;
+    clearanceMm: number;
+    weightBalanceMode: WeightBalanceMode;
+    loadingAnchor: LoadingAnchor;
+  };
 }

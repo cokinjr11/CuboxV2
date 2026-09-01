@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { downloadImportTemplate, importItemsExcel } from "../../api/client";
-import type { ImportPreview, ItemType } from "../../types";
+import type { ImportDefaults, ImportPreview, ItemType } from "../../types";
 import { downloadBlob } from "../../utils/download";
 
 const PROFILE_LABELS: Record<ItemType, string> = {
@@ -14,9 +14,13 @@ interface Props {
   profile: ItemType;
   value: ImportPreview | null;
   onChange: (preview: ImportPreview | null) => void;
+  /** Defaults del plan (Handling Rules) -Fase 5. El backend solo los aplica
+   * fila por fila cuando la celda de Excel viene vacia; un valor explicito
+   * de Excel siempre gana (ver core/import_items.py). */
+  defaults?: ImportDefaults;
 }
 
-export function ImportStep({ profile, value, onChange }: Props) {
+export function ImportStep({ profile, value, onChange, defaults }: Props) {
   const [downloading, setDownloading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
@@ -40,7 +44,7 @@ export function ImportStep({ profile, value, onChange }: Props) {
     setError("");
     onChange(null);
     try {
-      const preview = await importItemsExcel(file, profile);
+      const preview = await importItemsExcel(file, profile, defaults);
       onChange(preview);
     } catch (e: any) {
       setError(e?.response?.data?.detail || "Could not read the Excel file. Please verify it is a valid .xlsx file.");

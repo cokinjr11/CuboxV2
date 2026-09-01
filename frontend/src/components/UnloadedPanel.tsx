@@ -1,4 +1,5 @@
 import type { UnloadedItem } from "../types";
+import { formatDimensions } from "../utils/dimensions";
 
 interface Props {
   items: UnloadedItem[];
@@ -34,9 +35,7 @@ export function UnloadedPanel({ items, insertingItemId, onStartPlacing, onCancel
                 <tr key={it.id}>
                   <td>{it.code}</td>
                   <td>{it.description}</td>
-                  <td>
-                    {it.width} x {it.height} x {it.thickness}
-                  </td>
+                  <td>{formatDimensions(it.item_type, it.dimensions, it.width, it.height, it.thickness)}</td>
                   <td>{it.weight} kg</td>
                   <td>{it.group || "-"}</td>
                   <td>{it.system || "-"}</td>

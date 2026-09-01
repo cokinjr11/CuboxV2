@@ -1,6 +1,8 @@
 import axios from "axios";
 import type {
   ContainerSpec,
+  CustomLoadSpaceRequestBody,
+  ImportDefaults,
   ImportPreview,
   ItemType,
   LoadingAnchor,
@@ -43,11 +45,15 @@ export async function fetchLoadSpaces(): Promise<LoadSpaceSpec[]> {
 }
 
 // Import Excel profile-aware (Fase 3B). No reemplaza importExcel/import-excel
-// (legacy) -son 2 flujos independientes.
-export async function importItemsExcel(file: File, profile: ItemType): Promise<ImportPreview> {
+// (legacy) -son 2 flujos independientes. `defaults` (Fase 5) son los
+// defaults del PLAN (Handling Rules) -el backend solo los aplica cuando la
+// celda de Excel viene vacia, nunca pisan un valor explicito.
+export async function importItemsExcel(file: File, profile: ItemType, defaults?: ImportDefaults): Promise<ImportPreview> {
   const form = new FormData();
   form.append("file", file);
   form.append("profile", profile);
+  if (defaults?.orientationPolicy) form.append("default_orientation_policy", defaults.orientationPolicy);
+  if (defaults?.stackable !== undefined) form.append("default_stackable", String(defaults.stackable));
   const r = await api.post<ImportPreview>("/import-items-excel", form, {
     headers: { "Content-Type": "multipart/form-data" },
   });
@@ -68,14 +74,22 @@ export interface PackOptions {
   loadingAnchor: LoadingAnchor;
 }
 
+// CUBOX 2.0 Fase 5: el Load Space a empaquetar es o un preset del catalogo
+// (container_id, p.ej. "40ft_high_cube" -comportamiento legacy sin
+// cambios) o un espacio definido a mano (custom_load_space: Truck/Trailer/
+// Custom Container, ya soportado por el backend desde la Fase 2A). Nunca
+// ambos a la vez -ver backend app/models/schemas.py:PackRequest.
+export type PackLoadSpace = { containerId: string } | { customLoadSpace: CustomLoadSpaceRequestBody };
+
 export async function packContainer(
   items: WindowItem[],
-  containerId: string,
+  loadSpace: PackLoadSpace,
   options: PackOptions
 ): Promise<OptimizeResponse> {
   const r = await api.post<OptimizeResponse>("/pack", {
     items,
-    container_id: containerId,
+    container_id: "containerId" in loadSpace ? loadSpace.containerId : undefined,
+    custom_load_space: "customLoadSpace" in loadSpace ? loadSpace.customLoadSpace : undefined,
     optimization_mode: options.optimizationMode,
     enable_central_aisle: options.enableCentralAisle,
     aisle_width_mm: options.aisleWidthMm,

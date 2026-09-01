@@ -20,6 +20,7 @@ import {
   turnPiece,
   undo,
   unlockPiece,
+  type PackLoadSpace,
 } from "./api/client";
 import { downloadBlob } from "./utils/download";
 import { AlternativesPanel } from "./components/AlternativesPanel";
@@ -37,6 +38,8 @@ import type {
   AlternativeSolution,
   ColorByMode,
   ContainerSpec,
+  CustomLoadSpaceRequestBody,
+  InitialWorkspaceConfig,
   LoadingAnchor,
   OptimizationMode,
   PackingResult,
@@ -57,26 +60,39 @@ function getStoredTheme(): Theme {
   return stored === "light" ? "light" : "dark";
 }
 
-// initialItems/initialContainerId son opcionales y aditivos (CUBOX 2.0 Fase
-// 4): permiten que el New Load Plan Wizard entregue items ya importados al
+// initialWorkspace es opcional y aditivo (CUBOX 2.0 Fase 5, reemplaza los 2
+// props sueltos de la Fase 4): permite que el New Load Plan Wizard entregue
+// items ya importados + el Load Space + las Handling Rules elegidas al
 // abrir el workspace, sin cambiar en nada el comportamiento existente
-// cuando se omiten (<App /> sin props sigue siendo exactamente el flujo
+// cuando se omite (<App /> sin props sigue siendo exactamente el flujo
 // legacy: arranca vacio y el usuario importa/elige el contenedor a mano).
 interface AppProps {
-  initialItems?: WindowItem[];
-  initialContainerId?: string;
+  initialWorkspace?: InitialWorkspaceConfig;
+  /** Fase 5, seccion 35: boton opcional para volver a Home. Sin persistencia
+   * todavia, asi que quien lo dispare debe confirmar que se pierde el
+   * trabajo no guardado -esa confirmacion vive en AppRoot, no aca. */
+  onExitToHome?: () => void;
 }
 
-function App({ initialItems, initialContainerId }: AppProps = {}) {
+function App({ initialWorkspace, onExitToHome }: AppProps = {}) {
+  const initialContainerId = initialWorkspace && "containerId" in initialWorkspace.loadSpace ? initialWorkspace.loadSpace.containerId : undefined;
+  const initialCustomLoadSpace =
+    initialWorkspace && "customLoadSpace" in initialWorkspace.loadSpace ? initialWorkspace.loadSpace.customLoadSpace : undefined;
+
   const [containers, setContainers] = useState<ContainerSpec[]>([]);
-  const [items, setItems] = useState<WindowItem[]>(initialItems ?? []);
+  const [items, setItems] = useState<WindowItem[]>(initialWorkspace?.items ?? []);
   const [selectedContainerId, setSelectedContainerId] = useState("");
+  // Truck/Trailer/Custom Container definido a mano en el wizard (Fase 5):
+  // cuando esta presente, tiene PRIORIDAD sobre selectedContainerId al
+  // empaquetar (ver runOptimize) -es la unica fuente de verdad del Load
+  // Space elegido, el dropdown de abajo pasa a ser solo informativo.
+  const [customLoadSpace] = useState<CustomLoadSpaceRequestBody | undefined>(initialCustomLoadSpace);
   const [optimizationMode, setOptimizationMode] = useState<OptimizationMode>("best_space");
-  const [enableCentralAisle, setEnableCentralAisle] = useState(false);
-  const [aisleWidthMm, setAisleWidthMm] = useState(500);
-  const [clearanceMm, setClearanceMm] = useState(0);
-  const [weightBalanceMode, setWeightBalanceMode] = useState<WeightBalanceMode>("normal");
-  const [loadingAnchor, setLoadingAnchor] = useState<LoadingAnchor>("back_right");
+  const [enableCentralAisle, setEnableCentralAisle] = useState(initialWorkspace?.handlingRules.enableCentralAisle ?? false);
+  const [aisleWidthMm, setAisleWidthMm] = useState(initialWorkspace?.handlingRules.aisleWidthMm ?? 500);
+  const [clearanceMm, setClearanceMm] = useState(initialWorkspace?.handlingRules.clearanceMm ?? 0);
+  const [weightBalanceMode, setWeightBalanceMode] = useState<WeightBalanceMode>(initialWorkspace?.handlingRules.weightBalanceMode ?? "normal");
+  const [loadingAnchor, setLoadingAnchor] = useState<LoadingAnchor>(initialWorkspace?.handlingRules.loadingAnchor ?? "back_right");
   const [colorBy, setColorBy] = useState<ColorByMode>("default");
 
   const [result, setResult] = useState<PackingResult | null>(null);
@@ -149,9 +165,10 @@ function App({ initialItems, initialContainerId }: AppProps = {}) {
       // Remaining, asi que en ese caso se usa el mismo camino que Optimize
       // Remaining (mantiene las Locked fijas y reoptimiza el resto).
       const hasLocked = result?.placed.some((p) => p.locked) ?? false;
+      const loadSpace: PackLoadSpace = customLoadSpace ? { customLoadSpace } : { containerId: selectedContainerId };
       const response = hasLocked
         ? await optimizeRemaining({ optimizationMode, weightBalanceMode, loadingAnchor })
-        : await packContainer(items, selectedContainerId, {
+        : await packContainer(items, loadSpace, {
             optimizationMode,
             enableCentralAisle,
             aisleWidthMm,
@@ -423,19 +440,27 @@ function App({ initialItems, initialContainerId }: AppProps = {}) {
       <aside className="sidebar left">
         <div className="app-header">
           <img src={cuboxLogo} alt="CUBOX" className="app-logo" />
-          <button
-            type="button"
-            className="settings-btn"
-            title="Ajustes"
-            onClick={() => setSettingsOpen(true)}
-          >
-            ⚙
-          </button>
+          <div style={{ display: "flex", gap: 6 }}>
+            {onExitToHome && (
+              <button type="button" className="settings-btn" title="Volver a Home" onClick={onExitToHome}>
+                🏠
+              </button>
+            )}
+            <button
+              type="button"
+              className="settings-btn"
+              title="Ajustes"
+              onClick={() => setSettingsOpen(true)}
+            >
+              ⚙
+            </button>
+          </div>
         </div>
         <ImportPanel
           containers={containers}
           items={items}
           selectedContainerId={selectedContainerId}
+          customLoadSpace={customLoadSpace}
           optimizationMode={optimizationMode}
           enableCentralAisle={enableCentralAisle}
           aisleWidthMm={aisleWidthMm}

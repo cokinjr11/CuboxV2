@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { PlacedPiece } from "../types";
+import { dimensionsLabel, formatDimensions } from "../utils/dimensions";
 
 type OrientationChangeResult = { ok: boolean; reason: string };
 
@@ -11,9 +12,29 @@ interface Props {
   onToggleLock: () => Promise<void>;
 }
 
+// FIXED (Fase 5): el motor de orientacion hoy da EXACTAMENTE una
+// orientacion valida para esta politica -ni Rotate ni Turn tienen a donde
+// ir (ver backend app/core/orientation.py:_fixed_orientation/_rotate_pairs/
+// _turn_pairs). No es "eje vertical fijo pero rota en el piso": es cero
+// grados de libertad. Se documenta aca en vez de dejar que el usuario lo
+// descubra por un 409 del backend.
+function orientationHint(piece: PlacedPiece): string {
+  switch (piece.orientation_policy) {
+    case "fixed":
+      return "Esta pieza tiene orientacion Fixed: no admite Rotate ni Turn.";
+    case "upright":
+      return "Esta pieza es Upright: Rotate/Turn solo la giran 90° en el piso, la dimension vertical nunca cambia.";
+    case "free":
+      return "Esta pieza es Free: Rotate y Turn te dan acceso a sus 6 orientaciones posibles.";
+    default:
+      return "Rotar y Girar combinados dan acceso a las 4 orientaciones validas; la cara Width x Height jamas queda como base.";
+  }
+}
+
 export function PieceInspector({ piece, onRotate, onTurn, onRemove, onToggleLock }: Props) {
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<{ ok: boolean; message: string } | null>(null);
+  const orientationLocked = piece.orientation_policy === "fixed";
 
   async function handleOrientationChange(action: () => Promise<OrientationChangeResult>) {
     setBusy(true);
@@ -50,9 +71,9 @@ export function PieceInspector({ piece, onRotate, onTurn, onRemove, onToggleLock
         <dd>{piece.system || "-"}</dd>
         <dt>Group</dt>
         <dd>{piece.group || "-"}</dd>
-        <dt>Dimensiones origen (W x H x T)</dt>
+        <dt>{dimensionsLabel(piece.item_type)}</dt>
         <dd>
-          {piece.source_width} x {piece.source_height} x {piece.source_thickness} mm
+          {formatDimensions(piece.item_type, piece.source_dimensions, piece.source_width, piece.source_height, piece.source_thickness)} mm
         </dd>
         <dt>Orientacion</dt>
         <dd>{piece.orientation_label}</dd>
@@ -64,10 +85,7 @@ export function PieceInspector({ piece, onRotate, onTurn, onRemove, onToggleLock
         <dd>{piece.priority}</dd>
       </dl>
 
-      <p className="hint">
-        Arrastra la pieza en la vista 3D para moverla. Rotar y Girar combinados dan acceso a las 4 orientaciones
-        validas; la cara Width x Height jamas queda como base.
-      </p>
+      <p className="hint">Arrastra la pieza en la vista 3D para moverla. {orientationHint(piece)}</p>
 
       <button className="btn" onClick={handleToggleLock} disabled={busy}>
         {piece.locked ? "🔒 Unlock" : "🔓 Lock"}
@@ -81,15 +99,15 @@ export function PieceInspector({ piece, onRotate, onTurn, onRemove, onToggleLock
       ) : (
         <>
           <div className="undo-redo-row">
-            <button className="btn" onClick={() => handleOrientationChange(onRotate)} disabled={busy}>
+            <button className="btn" onClick={() => handleOrientationChange(onRotate)} disabled={busy || orientationLocked} title={orientationLocked ? "Fixed: sin cambios de orientacion" : undefined}>
               Rotar (R)
             </button>
-            <button className="btn" onClick={() => handleOrientationChange(onTurn)} disabled={busy}>
+            <button className="btn" onClick={() => handleOrientationChange(onTurn)} disabled={busy || orientationLocked} title={orientationLocked ? "Fixed: sin cambios de orientacion" : undefined}>
               Girar (T)
             </button>
           </div>
           <button className="btn" onClick={handleRemove} disabled={busy}>
-            Quitar del contenedor
+            Quitar del Load Space
           </button>
         </>
       )}

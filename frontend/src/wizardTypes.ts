@@ -1,7 +1,7 @@
 // CUBOX 2.0 Fase 4 - New Load Plan Wizard. Tipos exclusivos del wizard
 // (frontend-only, sin persistencia todavia) -no confundir con los tipos
 // espejo del backend en types.ts.
-import type { ImportPreview, ItemType, LoadingAnchor, LoadSpaceType, OrientationPolicy, WeightBalanceMode } from "./types";
+import type { ImportPreview, ItemType, LoadingAnchor, LoadSpaceType, OrientationPolicy, RoadWeightConfig, WeightBalanceMode } from "./types";
 
 // "Build Pallets" NO es un ItemType: es un flujo de preparacion futuro
 // (BOX -> Pallet Builder -> PALLET) que todavia no existe. Por eso vive en
@@ -25,6 +25,13 @@ export interface CustomLoadSpaceDraft {
   width: number;
   height: number;
   maxWeight: number;
+  // Fase 5 (seccion 26): el wizard todavia no tiene un paso para configurar
+  // Road Supports -este campo solo PREPARA el limite hacia el backend
+  // (que ya soporta CustomLoadSpaceRequest.road_weight_config desde la
+  // Fase 2B) para que un futuro paso pueda completarlo sin tocar de nuevo
+  // este archivo. Nunca se inventa un valor: queda undefined hasta que
+  // exista una UI real para configurarlo.
+  roadWeightConfig?: RoadWeightConfig;
 }
 
 export interface LoadSpaceDraft {

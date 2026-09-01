@@ -35,7 +35,7 @@ from app.core.sequence import (
     detect_operational_warnings,
 )
 from app.models.containers import build_custom_load_space, get_container, list_containers, list_load_spaces
-from app.models.import_schemas import ImportPreview
+from app.models.import_schemas import ImportDefaults, ImportPreview
 from app.models.schemas import (
     ContainerReportRequest,
     ContainerSpec,
@@ -49,6 +49,7 @@ from app.models.schemas import (
     OptimizationMode,
     OptimizeRemainingRequest,
     OptimizeResponse,
+    OrientationPolicy,
     PackRequest,
     PackingResult,
     PlacedPiece,
@@ -204,16 +205,27 @@ async def import_excel(file: UploadFile = File(...)):
 
 
 @router.post("/import-items-excel", response_model=ImportPreview)
-async def import_items_excel(file: UploadFile = File(...), profile: ItemType = Form(...)):
+async def import_items_excel(
+    file: UploadFile = File(...),
+    profile: ItemType = Form(...),
+    default_orientation_policy: OrientationPolicy | None = Form(None),
+    default_stackable: bool | None = Form(None),
+):
     """Import CUBOX 2.0 profile-aware (Fase 3B): BOX/PALLET/PANEL/CUSTOM.
     Devuelve un preview -parsea y valida la hoja completa (todos los errores
     juntos, no se detiene en la primera fila invalida) pero NO empaqueta ni
     toca el estado activo de cubicaje. No reemplaza /api/import-excel
-    (legacy), que sigue igual."""
+    (legacy), que sigue igual.
+
+    default_orientation_policy/default_stackable (Fase 5): defaults del
+    PLAN (Handling Rules del wizard) -solo se aplican fila por fila cuando
+    la celda de Excel viene vacia; un valor explicito de Excel siempre
+    gana (ver core/import_items.py:_parse_row)."""
     if not file.filename.lower().endswith((".xlsx", ".xlsm")):
         raise HTTPException(400, "El archivo debe ser .xlsx")
     content = await file.read()
-    return build_import_preview(content, profile)
+    defaults = ImportDefaults(orientation_policy=default_orientation_policy, stackable=default_stackable)
+    return build_import_preview(content, profile, defaults)
 
 
 @router.get("/import-template/{profile}")

@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from openpyxl import load_workbook
 
 from app.core.excel_import import TRUE_VALUES
-from app.models.import_schemas import ImportIssue, ImportIssueSeverity, ImportPreview, ImportSummary
+from app.models.import_schemas import ImportDefaults, ImportIssue, ImportIssueSeverity, ImportPreview, ImportSummary
 from app.models.schemas import Dimensions3D, ItemType, LoadItem, OrientationPolicy, dimensions_from_legacy
 
 FALSE_VALUES = {"no", "n", "false", "0"}
@@ -155,7 +155,12 @@ def _empty_summary() -> ImportSummary:
 
 
 def _parse_row(
-    profile: ItemType, spec: _ProfileSpec, headers: list[str], row: tuple, row_number: int
+    profile: ItemType,
+    spec: _ProfileSpec,
+    headers: list[str],
+    row: tuple,
+    row_number: int,
+    defaults: ImportDefaults | None = None,
 ) -> tuple[LoadItem | None, list[ImportIssue], list[ImportIssue]]:
     values = {headers[i]: row[i] for i in range(len(headers)) if i < len(row)}
     errors: list[ImportIssue] = []
@@ -216,23 +221,43 @@ def _parse_row(
         else:
             dimensions = Dimensions3D(length=dim_values["length"], width=dim_values["width"], height=dim_values["height"])
 
+    # Precedencia (Fase 5): valor explicito de Excel > default del PLAN
+    # (ImportDefaults, elegido en Handling Rules) > default de SISTEMA
+    # (spec.legacy_stackable_default). El warning describe el default que
+    # REALMENTE se aplico -nunca uno generico que no refleje la fuente real.
     raw_stackable = values.get("stackable")
-    stackable = spec.legacy_stackable_default
     if raw_stackable in (None, ""):
-        if not spec.legacy_stackable_default:
-            warn("stackable", "STACKABLE_DEFAULTED", "Stackable no fue especificado; se asumio No")
+        if defaults is not None and defaults.stackable is not None:
+            stackable = defaults.stackable
+            warn("stackable", "STACKABLE_DEFAULTED", f"Stackable no fue especificado; default del plan aplicado ({'Yes' if stackable else 'No'})")
+        else:
+            stackable = spec.legacy_stackable_default
+            if not spec.legacy_stackable_default:
+                warn("stackable", "STACKABLE_DEFAULTED", "Stackable no fue especificado; se asumio No")
     else:
         parsed_bool = _parse_boolean_or_none(raw_stackable)
         if parsed_bool is None:
             err("stackable", "INVALID_BOOLEAN", f"Valor de Stackable no reconocido: '{raw_stackable}'")
+            stackable = spec.legacy_stackable_default
         else:
             stackable = parsed_bool
 
+    # Misma precedencia para Orientation, pero el default del plan solo
+    # aplica cuando el perfil tiene una columna de Orientation real
+    # (orientation_mode != "none" -PALLET/PANEL tienen su politica fija, un
+    # default de plan no tendria sentido ahi).
     orientation_policy = spec.default_orientation
     if spec.orientation_mode != "none":
         raw_orientation = values.get("orientation")
         if raw_orientation in (None, ""):
-            if spec.orientation_mode == "required":
+            if defaults is not None and defaults.orientation_policy is not None:
+                orientation_policy = defaults.orientation_policy
+                warn(
+                    "orientation",
+                    "ORIENTATION_DEFAULTED",
+                    f"Orientation no fue especificado; default del plan aplicado ({orientation_policy.value})",
+                )
+            elif spec.orientation_mode == "required":
                 err("orientation", "MISSING_REQUIRED_VALUE", "Falta un valor para la columna obligatoria 'orientation'")
         else:
             parsed_policy = _parse_orientation(raw_orientation)
@@ -289,10 +314,16 @@ def _parse_row(
     return item, errors, warnings
 
 
-def build_import_preview(file_bytes: bytes, profile: ItemType) -> ImportPreview:
+def build_import_preview(file_bytes: bytes, profile: ItemType, defaults: ImportDefaults | None = None) -> ImportPreview:
     """Parsea la hoja completa para `profile` y devuelve un ImportPreview.
-    NO muta ningun estado -solo lectura/validacion (ver seccion 30 del plan
-    de esta fase)."""
+    NO muta ningun estado -solo lectura/validacion (ver Fase 3B, seccion 30).
+
+    `defaults` (Fase 5) son los defaults del PLAN elegidos en Handling
+    Rules -se aplican solo cuando la celda de Excel viene vacia, nunca
+    pisan un valor explicito (ver _parse_row). El ImportPreview resultante
+    ya contiene los LoadItems FINALES: no hay ningun merge oculto despues
+    de esto (Fase 5, seccion 8) -lo que el usuario ve en Review es
+    exactamente lo que entra al workspace."""
     spec = PROFILE_SPECS[profile]
 
     try:
@@ -331,7 +362,7 @@ def build_import_preview(file_bytes: bytes, profile: ItemType) -> ImportPreview:
         if row is None or all(v is None for v in row):
             continue
         total_rows += 1
-        item, row_errors, row_warnings = _parse_row(profile, spec, headers, row, row_number)
+        item, row_errors, row_warnings = _parse_row(profile, spec, headers, row, row_number, defaults)
         errors.extend(row_errors)
         warnings.extend(row_warnings)
         if item is not None:
