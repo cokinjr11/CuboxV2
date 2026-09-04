@@ -1,8 +1,6 @@
 import { useRef, useState } from "react";
 import type { ContainerSpec, CustomLoadSpaceRequestBody, LoadingAnchor, OptimizationMode, WeightBalanceMode, WindowItem } from "../types";
 
-const CLEARANCE_OPTIONS = [0, 5, 10, 20];
-
 const WEIGHT_BALANCE_OPTIONS: { value: WeightBalanceMode; label: string }[] = [
   { value: "ignore", label: "Ignore" },
   { value: "normal", label: "Normal" },
@@ -17,6 +15,10 @@ const LOADING_ANCHOR_OPTIONS: { value: LoadingAnchor; label: string }[] = [
 interface Props {
   containers: ContainerSpec[];
   items: WindowItem[];
+  /** Fase 5 bugfix: cuando el workspace se abrio desde el wizard, los items
+   * ya se importaron en el paso Import del wizard -esta seccion pasa a ser
+   * solo informativa, sin boton de importar. */
+  importedViaWizard?: boolean;
   selectedContainerId: string;
   /** Fase 5: cuando esta presente (Truck/Trailer/Custom Container definido
    * en el wizard), reemplaza el dropdown de contenedores por un valor de
@@ -44,6 +46,7 @@ interface Props {
 export function ImportPanel({
   containers,
   items,
+  importedViaWizard,
   selectedContainerId,
   customLoadSpace,
   optimizationMode,
@@ -77,20 +80,30 @@ export function ImportPanel({
   return (
     <div className="panel">
       <h2>1. Importar Excel</h2>
-      <button className="btn" onClick={() => fileInputRef.current?.click()}>
-        Seleccionar archivo .xlsx
-      </button>
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".xlsx,.xlsm"
-        style={{ display: "none" }}
-        onChange={handleFileChange}
-      />
-      {items.length > 0 && (
+      {importedViaWizard ? (
         <p className="hint">
           {items.length} lineas importadas — {totalQty} piezas totales
+          <br />
+          Imported via the New Load Plan Wizard.
         </p>
+      ) : (
+        <>
+          <button className="btn" onClick={() => fileInputRef.current?.click()}>
+            Seleccionar archivo .xlsx
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".xlsx,.xlsm"
+            style={{ display: "none" }}
+            onChange={handleFileChange}
+          />
+          {items.length > 0 && (
+            <p className="hint">
+              {items.length} lineas importadas — {totalQty} piezas totales
+            </p>
+          )}
+        </>
       )}
 
       <h2>2. Load Space</h2>
@@ -158,20 +171,19 @@ export function ImportPanel({
               <input
                 type="number"
                 min={0}
-                value={aisleWidthMm}
+                value={aisleWidthMm || ""}
                 onChange={(e) => onAisleWidthChange(Number(e.target.value))}
               />
             </label>
           )}
           <label className="inline-field">
             Minimum Clearance (mm)
-            <select value={clearanceMm} onChange={(e) => onClearanceChange(Number(e.target.value))}>
-              {CLEARANCE_OPTIONS.map((mm) => (
-                <option key={mm} value={mm}>
-                  {mm} mm
-                </option>
-              ))}
-            </select>
+            <input
+              type="number"
+              min={0}
+              value={clearanceMm || ""}
+              onChange={(e) => onClearanceChange(Number(e.target.value))}
+            />
           </label>
           <label className="inline-field">
             Weight Balance

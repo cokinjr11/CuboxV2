@@ -24,6 +24,7 @@ export function ImportStep({ profile, value, onChange, defaults }: Props) {
   const [downloading, setDownloading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
+  const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   async function handleDownloadTemplate() {
@@ -40,6 +41,10 @@ export function ImportStep({ profile, value, onChange, defaults }: Props) {
   }
 
   async function handleFileSelected(file: File) {
+    if (!/\.(xlsx|xlsm)$/i.test(file.name)) {
+      setError("Please provide an .xlsx file.");
+      return;
+    }
     setUploading(true);
     setError("");
     onChange(null);
@@ -52,6 +57,14 @@ export function ImportStep({ profile, value, onChange, defaults }: Props) {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
+  }
+
+  function handleDrop(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    setDragOver(false);
+    if (uploading) return;
+    const file = e.dataTransfer.files?.[0];
+    if (file) handleFileSelected(file);
   }
 
   return (
@@ -80,7 +93,19 @@ export function ImportStep({ profile, value, onChange, defaults }: Props) {
         />
       </div>
 
-      {!value && !uploading && <div className="import-dropzone">No file imported yet.</div>}
+      {!value && (
+        <div
+          className={`import-dropzone${dragOver ? " drag-over" : ""}`}
+          onDragOver={(e) => {
+            e.preventDefault();
+            if (!uploading) setDragOver(true);
+          }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={handleDrop}
+        >
+          {uploading ? "Reading file…" : "No file imported yet. Drag an .xlsx file here, or use Upload Excel above."}
+        </div>
+      )}
 
       {value && <ImportPreviewSummary preview={value} />}
     </div>

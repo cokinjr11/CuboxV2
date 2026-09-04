@@ -450,6 +450,12 @@
   margin-bottom: 20px;
 }
 
+.import-dropzone.drag-over {
+  border-color: var(--color-accent);
+  background: var(--color-bg-panel);
+  color: var(--color-text);
+}
+
 .import-summary-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));

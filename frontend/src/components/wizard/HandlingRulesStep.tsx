@@ -33,10 +33,10 @@ export function HandlingRulesStep({ mode, value, onChange }: Props) {
       {mode === "loose_boxes" && <OrientationField value={value.orientationPolicy} onChange={(v) => onChange({ orientationPolicy: v })} />}
 
       {mode === "palletized_load" && (
-        <div className="wizard-note">
-          <strong>Floor Rotation Allowed.</strong> Pallets always remain upright — they may only rotate on the floor
-          (Length × Width or Width × Length), never stand on an edge.
-        </div>
+        <FloorRotationField
+          value={value.orientationPolicy}
+          onChange={(v) => onChange({ orientationPolicy: v })}
+        />
       )}
 
       {mode === "panels_fragile" && (
@@ -55,7 +55,7 @@ export function HandlingRulesStep({ mode, value, onChange }: Props) {
           checked={value.defaultStackable}
           onChange={(e) => onChange({ defaultStackable: e.target.checked })}
         />
-        <label htmlFor="hr-stackable">Default Stackable</label>
+        <label htmlFor="hr-stackable">{mode === "palletized_load" ? "Pallet Stacking Allowed" : "Default Stackable"}</label>
       </div>
 
       <div className="wizard-field" style={{ maxWidth: 220 }}>
@@ -64,7 +64,7 @@ export function HandlingRulesStep({ mode, value, onChange }: Props) {
           id="hr-clearance"
           type="number"
           min={0}
-          value={value.clearanceMm}
+          value={value.clearanceMm || ""}
           onChange={(e) => onChange({ clearanceMm: Number(e.target.value) })}
         />
       </div>
@@ -85,7 +85,7 @@ export function HandlingRulesStep({ mode, value, onChange }: Props) {
             id="hr-aisle-width"
             type="number"
             min={0}
-            value={value.aisleWidthMm}
+            value={value.aisleWidthMm || ""}
             onChange={(e) => onChange({ aisleWidthMm: Number(e.target.value) })}
           />
         </div>
@@ -126,6 +126,29 @@ export function HandlingRulesStep({ mode, value, onChange }: Props) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// Fase 6: Floor Rotation es el MISMO campo orientationPolicy que ya usan
+// Loose Boxes/Custom Load (HandlingRulesDraft.orientationPolicy) -no es un
+// campo nuevo, solo una UI mas simple (Yes/No) para un item que solo admite
+// 2 politicas: UPRIGHT (puede rotar 90 grados en el piso) o FIXED (ninguna).
+function FloorRotationField({ value, onChange }: { value: OrientationPolicy; onChange: (v: OrientationPolicy) => void }) {
+  const allowed = value !== "fixed";
+  return (
+    <div className="wizard-field">
+      <label>Floor Rotation</label>
+      <div className="wizard-radio-row">
+        <label className="wizard-radio-option">
+          <input type="radio" name="floor-rotation" checked={allowed} onChange={() => onChange("upright")} />
+          Allowed (Length × Width or Width × Length, Height stays vertical)
+        </label>
+        <label className="wizard-radio-option">
+          <input type="radio" name="floor-rotation" checked={!allowed} onChange={() => onChange("fixed")} />
+          Not Allowed (Fixed orientation, no rotation)
+        </label>
+      </div>
     </div>
   );
 }

@@ -22,7 +22,7 @@ from app.models.schemas import ContainerSpec, LoadingAnchor, PlacedPiece
 CONTAINER = ContainerSpec(id="test", name="Test", length=5000, width=5000, height=3000, max_weight=1_000_000)
 
 
-def _piece(piece_id, x, z=0, y=0, delivery_sequence=None):
+def _piece(piece_id, x, z=0, y=0, delivery_sequence=None, dx=100, dy=100, dz=100):
     return PlacedPiece(
         id=piece_id,
         code=piece_id,
@@ -33,13 +33,13 @@ def _piece(piece_id, x, z=0, y=0, delivery_sequence=None):
         x=x,
         y=y,
         z=z,
-        dx=100,
-        dy=100,
-        dz=100,
+        dx=dx,
+        dy=dy,
+        dz=dz,
         orientation_label="P1-a",
-        source_width=100,
-        source_height=100,
-        source_thickness=50,
+        source_width=dx,
+        source_height=dy,
+        source_thickness=dz,
     )
 
 
@@ -203,3 +203,154 @@ def test_chunk_sequence_splits_into_fixed_size_batches():
 def test_chunk_sequence_rejects_non_positive_size():
     with pytest.raises(ValueError):
         chunk_sequence(["a", "b"], 0)
+
+
+# ==========================================================================
+# Fase 5.1 -Operational Load/Unload Sequence Refinement (seccion 19 del
+# pedido). Contenedor grande (5000x5000x3000) reutilizado de arriba: BACK_RIGHT
+# ancla en x=length-100 (fondo), y=width-100 (RIGHT, ver docstring del modulo
+# para la convencion Y confirmada contra packer.py).
+# ==========================================================================
+
+BACK_X = CONTAINER.length - 100
+RIGHT_Y = CONTAINER.width - 100
+MID_Y = CONTAINER.width - 200
+LEFT_Y = CONTAINER.width - 300
+
+
+def _column(prefix, x, y, levels=3):
+    """3 piezas apiladas (mismo x/y, z=0/100/200): cada una se apoya en la
+    anterior -una columna operativa de una sola pieza de ancho."""
+    return [_piece(f"{prefix}{i}", x=x, y=y, z=i * 100) for i in range(levels)]
+
+
+def test_sequence_a_simple_3x3_wall_starts_bottom_right_and_builds_up_before_sweeping_left():
+    right_col = _column("r", BACK_X, RIGHT_Y)
+    mid_col = _column("m", BACK_X, MID_Y)
+    left_col = _column("l", BACK_X, LEFT_Y)
+    pieces = right_col + mid_col + left_col
+
+    sequence = compute_load_sequence(pieces, CONTAINER)
+
+    assert sequence[0] == "r0"
+    for col in ("r", "m", "l"):
+        ids = [f"{col}{i}" for i in range(3)]
+        assert [sequence.index(i) for i in ids] == sorted(sequence.index(i) for i in ids), (
+            f"la columna {col} no se cargo de abajo hacia arriba: {sequence}"
+        )
+    # cada columna se completa (sube) antes de saltar del todo a la siguiente:
+    # el ultimo elemento de una columna debe ir antes que el primero de la
+    # siguiente (derecha -> centro -> izquierda).
+    assert sequence.index("r2") < sequence.index("m0")
+    assert sequence.index("m2") < sequence.index("l0")
+
+
+def test_sequence_b_support_dependency_bottom_always_before_top():
+    bottom = _piece("bottom", x=0, z=0)
+    top = _piece("top", x=0, z=100)  # mismo x/y -> se apoya en bottom
+    sequence = compute_load_sequence([bottom, top], CONTAINER)
+    assert sequence.index("bottom") < sequence.index("top")
+
+
+def test_sequence_c_multiple_supports_both_load_before_top():
+    support_a = _piece("support_a", x=0, y=0, z=0, dx=100, dy=100)
+    support_b = _piece("support_b", x=0, y=100, z=0, dx=100, dy=100)
+    # dy=200 -> se apoya sobre AMBOS soportes (solapa 100x100 con cada uno)
+    top = _piece("top", x=0, y=0, z=100, dx=100, dy=200)
+
+    sequence = compute_load_sequence([support_a, support_b, top], CONTAINER)
+
+    assert sequence.index("support_a") < sequence.index("top")
+    assert sequence.index("support_b") < sequence.index("top")
+
+
+def test_sequence_d_prefers_completing_local_column_before_distant_floor_piece():
+    right_col = _column("r", BACK_X, RIGHT_Y)
+    distant_floor = _piece("distant", x=500, y=500, z=0)  # lejos, sin relacion
+
+    sequence = compute_load_sequence(right_col + [distant_floor], CONTAINER)
+
+    assert sequence[0] == "r0"
+    assert sequence.index("r2") < sequence.index("distant"), (
+        "la columna activa debe completarse antes de saltar a una pieza de piso lejana"
+    )
+
+
+def test_sequence_e_back_right_sweeps_physically_right_to_left():
+    right = _piece("right", x=BACK_X, y=RIGHT_Y, z=0)
+    mid = _piece("mid", x=BACK_X, y=MID_Y, z=0)
+    left = _piece("left", x=BACK_X, y=LEFT_Y, z=0)
+
+    sequence = compute_load_sequence([left, mid, right], CONTAINER)
+
+    assert sequence == ["right", "mid", "left"]
+
+
+def test_sequence_f_back_section_before_equivalent_front_section():
+    back = _piece("back", x=CONTAINER.length - 100, y=0)
+    front = _piece("front", x=100, y=0)
+    sequence = compute_load_sequence([back, front], CONTAINER)
+    assert sequence.index("back") < sequence.index("front")
+
+
+def test_sequence_g_back_left_mirrors_back_right():
+    right_col = _column("r", BACK_X, RIGHT_Y)
+    left_col = _column("l", BACK_X, LEFT_Y)
+    pieces = right_col + left_col
+
+    sequence = compute_load_sequence(pieces, CONTAINER, LoadingAnchor.BACK_LEFT)
+
+    assert sequence[0] == "l0"
+    for col in ("r", "l"):
+        ids = [f"{col}{i}" for i in range(3)]
+        assert [sequence.index(i) for i in ids] == sorted(sequence.index(i) for i in ids)
+    assert sequence.index("l2") < sequence.index("r0")
+
+
+def test_sequence_h_automatic_step_grouping_does_not_produce_one_step_per_piece():
+    right_col = _column("r", BACK_X, RIGHT_Y)
+    mid_col = _column("m", BACK_X, MID_Y)
+    left_col = _column("l", BACK_X, LEFT_Y)
+    pieces = right_col + mid_col + left_col  # 9 piezas, un modulo fisico contiguo
+
+    steps = compute_load_steps(pieces, CONTAINER)
+    flat = [pid for step in steps for pid in step]
+
+    assert sorted(flat) == sorted(p.id for p in pieces)
+    assert len(steps) < len(pieces), f"se esperaban pocos steps agrupados, se obtuvieron {len(steps)}: {steps}"
+    assert all(len(s) <= MAX_STEP_SIZE_AUTO for s in steps)
+
+
+def test_sequence_i_unload_stack_top_before_middle_before_bottom():
+    bottom = _piece("bottom", x=0, z=0)
+    middle = _piece("middle", x=0, z=100)
+    top = _piece("top", x=0, z=200)
+
+    load = compute_load_sequence([bottom, middle, top], CONTAINER)
+    assert load.index("bottom") < load.index("middle") < load.index("top")
+
+    unload = compute_unload_sequence([bottom, middle, top])
+    assert unload.index("top") < unload.index("middle") < unload.index("bottom")
+
+
+def test_sequence_j_unload_prefers_door_accessible_module_before_deep_rear_module():
+    front_module = [_piece(f"front{i}", x=100, y=i * 100, z=0) for i in range(2)]
+    rear_module = [_piece(f"rear{i}", x=CONTAINER.length - 100, y=i * 100, z=0) for i in range(2)]
+
+    unload = compute_unload_sequence(front_module + rear_module)
+
+    assert max(unload.index(p.id) for p in front_module) < min(unload.index(p.id) for p in rear_module)
+
+
+def test_sequence_k_deterministic_across_repeated_runs():
+    right_col = _column("r", BACK_X, RIGHT_Y)
+    mid_col = _column("m", BACK_X, MID_Y)
+    pieces = right_col + mid_col
+
+    first = compute_load_sequence(pieces, CONTAINER)
+    second = compute_load_sequence(list(reversed(pieces)), CONTAINER)
+    assert first == second
+
+    first_steps = compute_load_steps(pieces, CONTAINER)
+    second_steps = compute_load_steps(list(reversed(pieces)), CONTAINER)
+    assert first_steps == second_steps

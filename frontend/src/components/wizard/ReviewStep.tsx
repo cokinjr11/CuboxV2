@@ -115,13 +115,28 @@ export function ReviewStep({ draft, catalog }: Props) {
         <h3>Handling Rules</h3>
         {draft.handlingRules && (
           <>
+            {draft.planningMode === "palletized_load" ? (
+              <div className="review-row">
+                <span className="review-label">Floor Rotation</span>
+                <span>{draft.handlingRules.orientationPolicy === "fixed" ? "Not Allowed" : "Allowed"}</span>
+              </div>
+            ) : (
+              <div className="review-row">
+                <span className="review-label">Orientation</span>
+                <span>{ORIENTATION_LABELS[draft.handlingRules.orientationPolicy]}</span>
+              </div>
+            )}
             <div className="review-row">
-              <span className="review-label">Orientation</span>
-              <span>{ORIENTATION_LABELS[draft.handlingRules.orientationPolicy]}</span>
-            </div>
-            <div className="review-row">
-              <span className="review-label">Default Stackable</span>
-              <span>{draft.handlingRules.defaultStackable ? "Yes" : "No"}</span>
+              <span className="review-label">{draft.planningMode === "palletized_load" ? "Pallet Stacking" : "Default Stackable"}</span>
+              <span>
+                {draft.planningMode === "palletized_load"
+                  ? draft.handlingRules.defaultStackable
+                    ? "Allowed"
+                    : "Not Allowed"
+                  : draft.handlingRules.defaultStackable
+                    ? "Yes"
+                    : "No"}
+              </span>
             </div>
             <div className="review-row">
               <span className="review-label">Minimum Clearance</span>

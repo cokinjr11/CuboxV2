@@ -309,9 +309,12 @@ def test_box_template_has_expected_headers():
     ]
 
 
-def test_pallet_template_has_no_orientation_column():
+def test_pallet_template_has_optional_orientation_column():
+    """Fase 6: PALLET ahora SI expone Orientation (opcional, UPRIGHT/FIXED
+    unicamente) -antes no tenia esta columna, ver import_items.py seccion 8
+    del pedido de Fase 6 para la justificacion de este cambio."""
     headers = _template_headers("pallet")
-    assert "Orientation" not in headers
+    assert "Orientation" in headers
     assert headers[:6] == ["Code", "Quantity", "Length", "Width", "Height", "Weight"]
 
 

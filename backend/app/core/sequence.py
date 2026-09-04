@@ -1,5 +1,14 @@
 """Orden de carga y descarga (secciones 17-21 de V2, 40-45 de V3, Anchored
-Loading Sequence post-V4).
+Loading Sequence post-V4, refinada en CUBOX 2.0 Fase 5.1).
+
+Fase 5.1: el ranking greedy de la carga ya NO trata "piso antes que apilado"
+como regla global -eso causaba cargar todo el piso del container antes de
+volver a completar columnas apiladas (secuencia geometricamente valida pero
+operativamente fragmentada, ver seccion 1-4 del pedido). Ahora el desempate
+prioriza seguir construyendo el modulo/columna activa (incluida la
+continuacion vertical inmediata) por sobre saltar a otro piso lejano. Ver el
+docstring de `_anchored_load_order_with_warnings` para el mapeo campo por
+campo contra la seccion 6 del pedido.
 
 Convencion: la puerta del contenedor esta en x=0, el fondo en x=length. Z=0 es
 el piso. Y (ancho) no tenia una convencion de izquierda/derecha establecida en
@@ -115,6 +124,14 @@ def _has_reference(pid: str, loaded: set[str], deps: dict[str, list[str]], boxes
     return any(boxes_too_close(pbox, boxes[other], tol) for other in loaded)
 
 
+def _lateral_progress_key(p: PlacedPiece, anchor: LoadingAnchor) -> float:
+    """Progresion lateral continua (seccion 9-10 de Fase 5.1): RIGHT = y
+    grande, LEFT = y chico (verificado contra packer.py:left_weight/
+    right_weight). BACK_RIGHT barre de derecha a izquierda -> se prefiere y
+    mas grande primero, de ahi el signo invertido. BACK_LEFT es simetrico."""
+    return -p.y if anchor == LoadingAnchor.BACK_RIGHT else p.y
+
+
 def _anchored_load_order_with_warnings(
     placed: list[PlacedPiece],
     container: ContainerSpec,
@@ -122,24 +139,45 @@ def _anchored_load_order_with_warnings(
     deps: dict[str, list[str]],
     tol: float = ANCHOR_TOLERANCE_MM,
 ) -> tuple[list[str], list[str]]:
-    """Anchored Loading Sequence: greedy piece-by-piece. En cada paso, entre
-    las piezas cuyas dependencias de soporte ya estan satisfechas (el "ready
-    set"), elige la que mejor cumple esta prioridad estricta (tupla de
-    comparacion, igual estilo que los sort keys de este archivo):
+    """Anchored Loading Sequence (Fase 5.1): greedy piece-by-piece. En cada
+    paso, entre las piezas cuyas dependencias de soporte ya estan satisfechas
+    (el "ready set"), elige la que mejor cumple esta prioridad estricta
+    (tupla de comparacion, cada campo mapea a un item de la seccion 6 del
+    pedido de Fase 5.1 -documentado explicitamente para no dejar "constantes
+    magicas" sin explicar):
 
-    1. piso antes que apilado (ya lo garantiza el Load Dependency Graph, se
-       refuerza como desempate)
-    2. toca la pared del fondo
-    3. toca la pared lateral elegida (BACK_RIGHT/BACK_LEFT)
-    4. es adyacente a una pieza YA elegida en la secuencia (crece desde lo
-       construido en vez de saltar de zona)
-    5. mas al fondo primero (-x)
-    6. z, y, id como desempate deterministico
+    1. `continues_last_column` -sigue verticalmente a la ULTIMA pieza
+       cargada (se apoya directo en ella). Esto es una especializacion mas
+       fuerte que el item 1 generico del pedido ("mismo modulo activo"):
+       tiene que ganarle incluso al desempate piso-antes-que-apilado (item 4)
+       para cumplir el ejemplo de la seccion 10 (R1->R2->R3 completo antes
+       que un piso lejano L1) -una lectura literal del orden numerado del
+       pedido (floor en el item 4, antes del item 5 "seguir hacia arriba")
+       rompe ese ejemplo, asi que este campo se resuelve primero a proposito.
+    2. `adjacent` -item 1 del pedido: toca (por soporte o cercania lateral)
+       cualquier pieza ya cargada, no solo la ultima. Hace que la secuencia
+       "crezca" desde lo construido en vez de saltar de zona.
+    3. `-x` -item 2: fondo antes que frente. Tambien cubre el item 7
+       ("avanzar hacia la puerta solo al final") porque es el mismo eje: una
+       vez que este campo desempata, un segundo campo identico en el mismo
+       eje nunca podria desempatar nada mas.
+    4. `side` -item 3: toca la pared lateral elegida (BACK_RIGHT/BACK_LEFT).
+       Principalmente decide la primera pieza de la secuencia.
+    5. `floor` -item 4: piso antes que apilado, como desempate GENERICO
+       (entre piezas sin relacion de columna activa) -no como regla global.
+    6. `z` ascendente -item 5: entre candidatos ya "adjacent", seguir
+       construyendo hacia arriba antes que preferir otra cosa a la misma
+       altura.
+    7. progresion lateral continua (`_lateral_progress_key`) -item 6:
+       derecha->izquierda para BACK_RIGHT, simetrico para BACK_LEFT.
+    8. `group` -item 8: desempate suave por Group/System.
+    9. `pid` -item 9: desempate deterministico final.
 
     La primera pieza (con el "ya cargado" vacio) cae naturalmente en la
-    esquina fondo+lateral elegida gracias a los criterios 2-3, sin necesitar
-    un caso especial. Como solo se elige del "ready set", el resultado ya es
-    topologicamente valido.
+    esquina fondo+lateral elegida gracias a los campos 3-4, sin necesitar un
+    caso especial. Como solo se elige del "ready set", el resultado ya es
+    topologicamente valido -la geometria de soporte nunca se viola aunque las
+    preferencias operativas cambien.
 
     Devuelve (orden, warnings): una advertencia por cada pieza que, en el
     momento de cargarse, no tenia NINGUNA referencia fisica (piso/fondo/
@@ -152,13 +190,16 @@ def _anchored_load_order_with_warnings(
     warnings: list[str] = []
     remaining = set(by_id)
 
-    def score(pid: str) -> tuple[int, int, int, int, float, float, float, str]:
+    def score(pid: str) -> tuple[int, int, float, int, int, float, float, str, str]:
         p = by_id[pid]
-        floor = 0 if p.z <= TOL else 1
-        back = 0 if _touches_back_wall(p, container, tol) else 1
-        side = 0 if _touches_side_wall(p, container, anchor, tol) else 1
+        last = order[-1] if order else None
+        continues_last_column = 0 if last is not None and last in deps.get(pid, []) else 1
         adjacent = 0 if _has_reference(pid, loaded, deps, boxes, tol) else 1
-        return (floor, back, side, adjacent, -p.x, p.z, p.y, pid)
+        back_depth = -p.x
+        side = 0 if _touches_side_wall(p, container, anchor, tol) else 1
+        floor = 0 if p.z <= TOL else 1
+        lateral = _lateral_progress_key(p, anchor)
+        return (continues_last_column, adjacent, back_depth, side, floor, p.z, lateral, p.group, pid)
 
     while remaining:
         ready = [pid for pid in remaining if all(d in loaded for d in deps.get(pid, []))]
@@ -170,7 +211,8 @@ def _anchored_load_order_with_warnings(
             break
 
         best = min(ready, key=score)
-        _floor, back, side, adjacent, *_rest = score(best)
+        _continues, adjacent, _back_depth, side, _floor, *_rest = score(best)
+        back = 0 if _touches_back_wall(by_id[best], container, tol) else 1
         # El piso NO cuenta como referencia de posicionamiento por si solo
         # (seccion 10 del pedido): una pieza puede estar bien apoyada y
         # seguir siendo mala primera pieza si esta a 5000mm de la pared y

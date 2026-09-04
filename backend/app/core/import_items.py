@@ -115,12 +115,19 @@ PROFILE_SPECS: dict[ItemType, _ProfileSpec] = {
         allow_system=False,
     ),
     ItemType.PALLET: _ProfileSpec(
+        # Fase 6: Orientation es OPCIONAL para PALLET (no "none" como antes) -
+        # reusa exactamente el mismo mecanismo generico de precedencia que ya
+        # usa BOX (Excel explicito > default del plan/Floor Rotation > UPRIGHT
+        # de sistema), solo que restringido a UPRIGHT/FIXED (un pallet nunca
+        # es FREE ni PANEL_EDGE_ONLY). Si la celda viene vacia y no hay
+        # default de plan, cae en default_orientation=UPRIGHT (igual que
+        # siempre).
         required=("code", "quantity", "length", "width", "height", "weight"),
         dimension_keys=("length", "width", "height"),
         use_legacy_panel_mapping=False,
         item_type=ItemType.PALLET,
-        orientation_mode="none",
-        allowed_orientations=(),
+        orientation_mode="optional",
+        allowed_orientations=(OrientationPolicy.UPRIGHT, OrientationPolicy.FIXED),
         default_orientation=OrientationPolicy.UPRIGHT,
         legacy_stackable_default=False,
         allow_system=False,

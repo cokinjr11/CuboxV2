@@ -17,6 +17,7 @@ TEMPLATE_VERSION = 1
 
 _ORIENTATION_OPTIONS_BY_PROFILE: dict[ItemType, list[str]] = {
     ItemType.BOX: ["FREE", "UPRIGHT", "FIXED"],
+    ItemType.PALLET: ["UPRIGHT", "FIXED"],
     ItemType.CUSTOM: ["FREE", "UPRIGHT", "FIXED"],
 }
 
@@ -26,8 +27,10 @@ _HEADERS_BY_PROFILE: dict[ItemType, list[str]] = {
         "Description", "Orientation", "Stackable", "Max Stack Weight", "Group", "Priority", "Delivery Sequence",
     ],
     ItemType.PALLET: [
+        # Orientation es OPCIONAL (Fase 6): si se omite, se usa el Floor
+        # Rotation del plan (wizard) o UPRIGHT de sistema -ver import_items.py.
         "Code", "Quantity", "Length", "Width", "Height", "Weight",
-        "Description", "Stackable", "Max Stack Weight", "Group", "Priority", "Delivery Sequence",
+        "Description", "Orientation", "Stackable", "Max Stack Weight", "Group", "Priority", "Delivery Sequence",
     ],
     ItemType.PANEL: [
         "Code", "Quantity", "Width", "Height", "Thickness", "Weight",
@@ -72,6 +75,19 @@ _EXAMPLE_VALUES: dict[str, object] = {
     "Stackable": "No",
 }
 
+# Fase 6: PALLET solo admite UPRIGHT/FIXED (nunca FREE) -la nota generica y
+# el valor de ejemplo de "Orientation" de arriba no aplican para ese perfil,
+# asi que se sobreescriben puntualmente aca en vez de bifurcar todo el dict.
+_ORIENTATION_NOTE_OVERRIDE_BY_PROFILE: dict[ItemType, str] = {
+    ItemType.PALLET: "Opcional. UPRIGHT o FIXED (nunca FREE: un pallet jamas se para de canto). Si se omite, "
+    "se usa el Floor Rotation configurado en el plan (Handling Rules); si el plan tampoco lo define, UPRIGHT. "
+    "UPRIGHT = puede rotar 90 grados en el piso (Length x Width), Height siempre vertical. "
+    "FIXED = sin cambios de orientacion.",
+}
+_ORIENTATION_EXAMPLE_OVERRIDE_BY_PROFILE: dict[ItemType, str] = {
+    ItemType.PALLET: "UPRIGHT",
+}
+
 
 def build_import_template(profile: ItemType) -> bytes:
     headers = _HEADERS_BY_PROFILE[profile]
@@ -108,10 +124,13 @@ def _build_instructions_sheet(workbook: Workbook, profile: ItemType, headers: li
     sheet.append([f"Template Version: {TEMPLATE_VERSION}"])
     sheet.append([])
     sheet.append(["Column", "Notes"])
+    orientation_note = _ORIENTATION_NOTE_OVERRIDE_BY_PROFILE.get(profile, _COLUMN_NOTES.get("Orientation", ""))
     for header in headers:
-        sheet.append([header, _COLUMN_NOTES.get(header, "")])
+        note = orientation_note if header == "Orientation" else _COLUMN_NOTES.get(header, "")
+        sheet.append([header, note])
 
     sheet.append([])
     sheet.append(["Example row (for reference only - do not import as real data):"])
     sheet.append(headers)
-    sheet.append([_EXAMPLE_VALUES.get(h, "") for h in headers])
+    orientation_example = _ORIENTATION_EXAMPLE_OVERRIDE_BY_PROFILE.get(profile, _EXAMPLE_VALUES.get("Orientation", ""))
+    sheet.append([orientation_example if h == "Orientation" else _EXAMPLE_VALUES.get(h, "") for h in headers])

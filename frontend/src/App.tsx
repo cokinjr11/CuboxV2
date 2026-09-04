@@ -75,6 +75,12 @@ interface AppProps {
 }
 
 function App({ initialWorkspace, onExitToHome }: AppProps = {}) {
+  // Fase 5 bugfix: si el workspace se abrio desde el wizard (initialWorkspace
+  // presente), los items ya se importaron en el paso Import del wizard -el
+  // panel "1. Importar Excel" de aca pasa a ser solo informativo (ver
+  // ImportPanel). Solo el flujo legacy directo ("Open Legacy Workspace" sin
+  // pasar por el wizard) sigue necesitando el boton de importar aca.
+  const cameFromWizard = initialWorkspace !== undefined;
   const initialContainerId = initialWorkspace && "containerId" in initialWorkspace.loadSpace ? initialWorkspace.loadSpace.containerId : undefined;
   const initialCustomLoadSpace =
     initialWorkspace && "customLoadSpace" in initialWorkspace.loadSpace ? initialWorkspace.loadSpace.customLoadSpace : undefined;
@@ -459,6 +465,7 @@ function App({ initialWorkspace, onExitToHome }: AppProps = {}) {
         <ImportPanel
           containers={containers}
           items={items}
+          importedViaWizard={cameFromWizard}
           selectedContainerId={selectedContainerId}
           customLoadSpace={customLoadSpace}
           optimizationMode={optimizationMode}
