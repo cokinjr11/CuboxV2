@@ -117,7 +117,11 @@ export function LoadPlanWizard({ onCancel, onComplete }: Props) {
             onChange={(importPreview) => patchDraft({ importPreview })}
             defaults={
               draft.handlingRules
-                ? { orientationPolicy: draft.handlingRules.orientationPolicy, stackable: draft.handlingRules.defaultStackable }
+                ? {
+                    orientationPolicy: draft.handlingRules.orientationPolicy,
+                    stackable: draft.handlingRules.defaultStackable,
+                    // Fase 5C-FINAL: Tilt es PLAN-LEVEL ONLY, sin equivalente de import default.
+                  }
                 : undefined
             }
           />

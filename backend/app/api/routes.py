@@ -18,7 +18,7 @@ from app.core.geometry import Box, boxes_overlap, within_container
 from app.core.history import EditHistory
 from app.core.import_items import build_import_preview
 from app.core.import_templates import build_import_template
-from app.core.manual_move import validate_move, validate_placement
+from app.core.manual_move import validate_move, validate_placement, validate_tilt_change
 from app.core.optimize import run_optimization
 from app.core.orientation import get_valid_orientations, toggle_orientation, turn_orientation
 from app.core.packer import compute_metrics
@@ -61,6 +61,7 @@ from app.models.schemas import (
     ReportValidationResponse,
     ReservedZoneOut,
     RotatePieceRequest,
+    SetTiltRequest,
     StepMode,
     UnloadedItem,
     UnlockPieceRequest,
@@ -81,6 +82,7 @@ _current_state: dict = {
     "optimization_mode": OptimizationMode.BEST_SPACE,
     "weight_balance_mode": WeightBalanceMode.NORMAL,
     "loading_anchor": LoadingAnchor.BACK_RIGHT,
+    "plan_handling_rules": None,
 }
 
 
@@ -136,6 +138,12 @@ def _refresh_derived(state: PackingResult) -> None:
 
 
 def _window_item_from_placed(p: PlacedPiece) -> WindowItem:
+    # Fase 5B: stackable_override/orientation_override se "congelan" al valor
+    # YA resuelto (p.stackable/p.orientation_policy) en vez de copiar el
+    # override crudo original -esta pieza ya paso por una resolucion real
+    # (el pack que la coloco), Optimize Remaining no debe hacerla "derivar"
+    # a un nuevo default de plan que haya cambiado desde entonces (ver
+    # core/handling_rules.py: override no-None siempre gana).
     return WindowItem(
         code=p.code,
         description=p.description,
@@ -147,15 +155,24 @@ def _window_item_from_placed(p: PlacedPiece) -> WindowItem:
         system=p.system,
         group=p.group,
         stackable=p.stackable,
+        stackable_override=p.stackable,
         priority=p.priority,
         max_stack_weight=p.max_stack_weight,
         delivery_sequence=p.delivery_sequence,
+        boxes_inside=p.boxes_inside,
         item_type=p.item_type,
         orientation_policy=p.orientation_policy,
+        orientation_override=p.orientation_policy,
+        # Fase 5C-FINAL: Tilt es PLAN-LEVEL ONLY -no hay valor de item que
+        # "congelar" (resolve_plan_tilt en handling_rules.py ignora estos
+        # campos del LoadItem y re-resuelve directo de item_type + el plan
+        # ACTUAL que llega a Optimize Remaining -ver core/optimize.py).
     )
 
 
 def _window_item_from_unloaded(u: UnloadedItem) -> WindowItem:
+    # Ver comentario de _window_item_from_placed: mismo criterio de "congelar"
+    # el valor ya resuelto como override explicito.
     return WindowItem(
         code=u.code,
         description=u.description,
@@ -167,11 +184,15 @@ def _window_item_from_unloaded(u: UnloadedItem) -> WindowItem:
         system=u.system,
         group=u.group,
         stackable=u.stackable,
+        stackable_override=u.stackable,
         priority=u.priority,
         max_stack_weight=u.max_stack_weight,
         delivery_sequence=u.delivery_sequence,
+        boxes_inside=u.boxes_inside,
         item_type=u.item_type,
         orientation_policy=u.orientation_policy,
+        orientation_override=u.orientation_policy,
+        # Fase 5C-FINAL: ver comentario equivalente en _window_item_from_placed.
     )
 
 
@@ -219,8 +240,10 @@ async def import_items_excel(
 
     default_orientation_policy/default_stackable (Fase 5): defaults del
     PLAN (Handling Rules del wizard) -solo se aplican fila por fila cuando
-    la celda de Excel viene vacia; un valor explicito de Excel siempre
-    gana (ver core/import_items.py:_parse_row)."""
+    la celda de Excel viene vacia; un valor explicito de Excel siempre gana
+    (ver core/import_items.py:_parse_row). Tilt (Fase 5C-FINAL) NO tiene
+    equivalente aca -es PLAN-LEVEL ONLY, sin columna de Excel ni default de
+    import; se configura unicamente via plan_handling_rules en /api/pack."""
     if not file.filename.lower().endswith((".xlsx", ".xlsm")):
         raise HTTPException(400, "El archivo debe ser .xlsx")
     content = await file.read()
@@ -269,6 +292,7 @@ def pack(request: PackRequest):
         zones,
         request.clearance_mm,
         request.weight_balance_mode,
+        plan_handling_rules=request.plan_handling_rules,
     )
 
     zones_out = _reserved_zones_out(zones)
@@ -282,6 +306,7 @@ def pack(request: PackRequest):
 
     _current_state["result"] = best
     _current_state["load_space"] = container
+    _current_state["plan_handling_rules"] = request.plan_handling_rules
     _current_state["reserved_zones"] = zones
     _current_state["clearance"] = request.clearance_mm
     _current_state["optimization_mode"] = request.optimization_mode
@@ -311,6 +336,8 @@ def optimize_remaining(req: OptimizeRemainingRequest = OptimizeRemainingRequest(
         _current_state["weight_balance_mode"] = req.weight_balance_mode
     if req.loading_anchor is not None:
         _current_state["loading_anchor"] = req.loading_anchor
+    if req.plan_handling_rules is not None:
+        _current_state["plan_handling_rules"] = req.plan_handling_rules
 
     locked = [p for p in state.placed if p.locked]
     unlocked = [p for p in state.placed if not p.locked]
@@ -341,6 +368,7 @@ def optimize_remaining(req: OptimizeRemainingRequest = OptimizeRemainingRequest(
         _clearance(),
         _current_state["weight_balance_mode"],
         preplaced=locked,
+        plan_handling_rules=_current_state["plan_handling_rules"],
     )
 
     zones_out = _reserved_zones_out(_reserved_zones())
@@ -532,10 +560,15 @@ def remove_piece(req: RemovePieceRequest):
             priority=piece.priority,
             max_stack_weight=piece.max_stack_weight,
             delivery_sequence=piece.delivery_sequence,
+            boxes_inside=piece.boxes_inside,
             reason="Removido manualmente",
             reason_code=UnloadedReason.MANUAL_REMOVE.value,
             item_type=piece.item_type,
             orientation_policy=piece.orientation_policy,
+            stackable_override=piece.stackable_override,
+            orientation_override=piece.orientation_override,
+            allow_tilt=piece.allow_tilt,
+            max_tilt_angle=piece.max_tilt_angle,
         )
     )
     _refresh_derived(state)
@@ -550,6 +583,30 @@ def insert_piece(req: InsertPieceRequest):
     item = next((u for u in state.unloaded if u.id == req.unloaded_id), None)
     if item is None:
         raise HTTPException(404, f"Pieza {req.unloaded_id} no encontrada en Unloaded Items")
+
+    matching = next(
+        (
+            o
+            for o in get_valid_orientations(
+                item.dimensions,
+                item.resolved_orientation_policy,
+                allow_tilt=item.allow_tilt,
+                max_tilt_angle=item.max_tilt_angle or 0.0,
+            )
+            if o.dx == req.dx and o.dy == req.dy and o.dz == req.dz
+        ),
+        None,
+    )
+    orientation_label = matching.label if matching else ""
+    if matching is not None:
+        insert_tilt_angle = matching.tilt_angle
+        insert_tilt_axis = matching.tilt_axis
+        insert_base_dx = matching.base_dx if matching.base_dx is not None else matching.dx
+        insert_base_dy = matching.base_dy if matching.base_dy is not None else matching.dy
+        insert_base_dz = matching.base_dz if matching.base_dz is not None else matching.dz
+    else:
+        insert_tilt_angle, insert_tilt_axis = 0.0, None
+        insert_base_dx = insert_base_dy = insert_base_dz = None
 
     valid, reason = validate_placement(
         item.id,
@@ -570,19 +627,17 @@ def insert_piece(req: InsertPieceRequest):
         _reserved_zones(),
         _clearance(),
         item.resolved_orientation_policy,
+        allow_tilt=item.allow_tilt,
+        max_tilt_angle=item.max_tilt_angle or 0.0,
+        tilt_angle=insert_tilt_angle,
+        item_type=item.item_type,
+        tilt_axis=insert_tilt_axis,
+        base_dx=insert_base_dx,
+        base_dy=insert_base_dy,
+        base_dz=insert_base_dz,
     )
     if not valid:
         raise HTTPException(409, reason)
-
-    matching = next(
-        (
-            o
-            for o in get_valid_orientations(item.dimensions, item.resolved_orientation_policy)
-            if o.dx == req.dx and o.dy == req.dy and o.dz == req.dz
-        ),
-        None,
-    )
-    orientation_label = matching.label if matching else ""
 
     _current_state["history"].push(state.placed, state.unloaded)
     state.unloaded = [u for u in state.unloaded if u.id != item.id]
@@ -598,6 +653,7 @@ def insert_piece(req: InsertPieceRequest):
             priority=item.priority,
             max_stack_weight=item.max_stack_weight,
             delivery_sequence=item.delivery_sequence,
+            boxes_inside=item.boxes_inside,
             x=req.x,
             y=req.y,
             z=req.z,
@@ -610,8 +666,47 @@ def insert_piece(req: InsertPieceRequest):
             source_thickness=item.thickness,
             item_type=item.item_type,
             orientation_policy=item.orientation_policy,
+            stackable_override=item.stackable_override,
+            orientation_override=item.orientation_override,
+            allow_tilt=item.allow_tilt,
+            max_tilt_angle=item.max_tilt_angle,
+            tilt_angle=insert_tilt_angle,
+            tilt_axis=insert_tilt_axis,
+            base_dx=insert_base_dx,
+            base_dy=insert_base_dy,
+            base_dz=insert_base_dz,
         )
     )
+    _refresh_derived(state)
+
+    return state
+
+
+@router.post("/set-tilt", response_model=PackingResult)
+def set_tilt(req: SetTiltRequest):
+    """Fase 5C: cambiar el angulo de Tilt de una pieza ya colocada. Rechaza
+    limpiamente (409) si la pieza no admite Tilt, el angulo excede el
+    maximo efectivo, o la nueva geometria deja de ser valida (orientacion,
+    limites, colision, soporte, clearance, road weight) -ver
+    core/manual_move.py:validate_tilt_change, la unica fuente de verdad."""
+    state = _get_active_state()
+    piece = _find_placed(state, req.piece_id)
+    _ensure_unlocked(piece)
+
+    valid, reason, new_dims = validate_tilt_change(
+        piece,
+        req.tilt_angle,
+        state.placed,
+        _current_state["load_space"],
+        _reserved_zones(),
+        _clearance(),
+    )
+    if not valid:
+        raise HTTPException(409, reason)
+
+    _current_state["history"].push(state.placed, state.unloaded)
+    piece.x, piece.y, piece.z, piece.dx, piece.dy, piece.dz = new_dims
+    piece.tilt_angle = req.tilt_angle
     _refresh_derived(state)
 
     return state

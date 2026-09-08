@@ -339,6 +339,53 @@
   padding: 2px 6px;
 }
 
+/* Fase 5A: identifica un Load Space definido a mano (Truck/Trailer/Custom)
+   como distinto de un preset del catalogo, en Review y en el Workspace. */
+.badge-custom {
+  display: inline-block;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: transparent;
+  border: 1px solid var(--color-accent);
+  color: var(--color-accent);
+  border-radius: 4px;
+  padding: 1px 6px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+/* Fase 5B: mismo estilo de badge, reusado en el Inspector para distinguir un
+   valor de Handling Rule con override explicito de item (accent, igual que
+   badge-custom) de uno heredado del default de plan/sistema (muted). */
+.badge-override {
+  display: inline-block;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: transparent;
+  border: 1px solid var(--color-accent);
+  color: var(--color-accent);
+  border-radius: 4px;
+  padding: 1px 6px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.badge-inherited {
+  display: inline-block;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: transparent;
+  border: 1px solid var(--color-border-strong);
+  color: var(--color-text-muted);
+  border-radius: 4px;
+  padding: 1px 6px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
 /* ---------- Forms ---------- */
 
 .wizard-field {

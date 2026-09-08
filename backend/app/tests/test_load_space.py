@@ -263,3 +263,102 @@ def test_pack_endpoint_accepts_custom_load_space():
     best = r.json()["best"]
     assert best["metrics"]["total_pieces"] == 2
     assert best["container"]["load_space_type"] == "truck"
+
+
+# ---------------------------------------------------------------------------
+# TEST J (Fase 5A, seccion 9): precedencia explicita -si el request trae
+# AMBOS container_id y custom_load_space (no deberia pasar desde el wizard
+# real, que son mutuamente excluyentes en la UI, pero el contrato HTTP no lo
+# impide), custom_load_space debe ganar siempre. Nunca un fallback silencioso
+# al catalogo cuando el usuario eligio explicitamente un Load Space custom.
+# ---------------------------------------------------------------------------
+
+
+def test_pack_endpoint_prefers_custom_load_space_when_both_are_present():
+    r = client.post(
+        "/api/pack",
+        json={
+            "items": [_window(quantity=2).model_dump()],
+            "container_id": "40ft_standard",
+            "custom_load_space": {
+                "name": "Warehouse Truck 01",
+                "load_space_type": "truck",
+                "length": 7200,
+                "width": 2400,
+                "height": 2500,
+                "max_weight": 8000,
+            },
+        },
+    )
+    assert r.status_code == 200
+    best = r.json()["best"]
+    assert best["container"]["load_space_type"] == "truck"
+    assert best["container"]["name"] == "Warehouse Truck 01"
+    assert best["container"]["length"] == 7200
+    assert best["container"]["id"] != "40ft_standard"
+
+
+# ---------------------------------------------------------------------------
+# TEST K (Fase 5A, seccion 11-12): manual movement y final validation deben
+# resolver el MISMO Load Space custom que uso el packing original -no un
+# catalogo default. Se prueba end-to-end via los endpoints reales (no solo
+# validate_placement de bajo nivel, que ya cubre TEST F), para probar que
+# _current_state["load_space"] efectivamente queda seteado al objeto custom
+# despues de /api/pack y que /api/validate-move lo reutiliza.
+# ---------------------------------------------------------------------------
+
+
+def test_manual_move_and_final_validation_use_the_active_custom_load_space():
+    # Espacio angosto a proposito: un movimiento que seria valido en un
+    # contenedor estandar (40ft) es invalido aca -si el endpoint cayera de
+    # nuevo en un catalogo por error, este movimiento pasaria igual.
+    r = client.post(
+        "/api/pack",
+        json={
+            "items": [_window(quantity=1, width=800, height=1200, thickness=80).model_dump()],
+            "custom_load_space": {
+                "name": "Tiny Custom Space",
+                "load_space_type": "custom",
+                "length": 1000,
+                "width": 1000,
+                "height": 1300,
+                "max_weight": 5000,
+            },
+        },
+    )
+    assert r.status_code == 200
+    placed = r.json()["best"]["placed"]
+    assert len(placed) == 1
+    piece = placed[0]
+
+    # Mover la pieza exactamente a x=length (1000): sin importar que
+    # orientacion (dx) haya elegido el packer, x+dx siempre supera el limite
+    # del custom space -si el endpoint cayera de nuevo en un catalogo mas
+    # grande, este movimiento pasaria igual.
+    invalid_move = client.post(
+        "/api/validate-move",
+        json={
+            "piece_id": piece["id"], "x": 1000, "y": 0, "z": 0,
+            "dx": piece["dx"], "dy": piece["dy"], "dz": piece["dz"],
+        },
+    )
+    assert invalid_move.status_code == 200
+    assert invalid_move.json()["valid"] is False
+
+    # La misma pieza, movida a una posicion valida DENTRO del custom space,
+    # debe aceptarse.
+    valid_move = client.post(
+        "/api/validate-move",
+        json={
+            "piece_id": piece["id"], "x": 0, "y": 0, "z": 0,
+            "dx": piece["dx"], "dy": piece["dy"], "dz": piece["dz"],
+        },
+    )
+    assert valid_move.status_code == 200
+    assert valid_move.json()["valid"] is True
+
+    # Final validation (Report -> Validate) tambien debe resolver el mismo
+    # custom Load Space, sin errores para el layout actual.
+    validate_r = client.post("/api/report/validate")
+    assert validate_r.status_code == 200
+    assert validate_r.json() == {"valid": True, "errors": []}

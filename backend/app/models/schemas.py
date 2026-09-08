@@ -44,13 +44,45 @@ DEFAULT_ORIENTATION_POLICY_BY_ITEM_TYPE: dict[ItemType, OrientationPolicy] = {
 }
 
 
-def resolve_orientation_policy(item_type: ItemType, orientation_policy: OrientationPolicy | None) -> OrientationPolicy:
-    """orientation_policy explicito siempre gana; si no se especifico, se usa
-    el default de item_type. Un WindowItem/legacy item (item_type=PANEL, sin
-    orientation_policy) resuelve siempre a PANEL_EDGE_ONLY -comportamiento
-    identico al de antes de que este campo existiera."""
+TILT_MAX_ANGLE_DEG = 30.0
+"""Fase 5C: dominio seguro para Tilt/Inclination, el mismo para cualquier
+item que lo soporte (hoy solo PANEL -ver core/handling_rules.py). No es un
+limite arbitrario: a 30 grados, cos(30)=0.87 (el panel sigue siendo
+reconocible como "de pie", no una reclinacion), y sin(30)=0.5 ya agrega la
+mitad de su altura como huella horizontal extra -mas alla de este punto el
+Tilt empieza a comportarse como una reclinacion libre (fuera de alcance de
+esta fase) en vez de una inclinacion controlada. Aplicado en 2 capas: el
+Field(le=...) de abajo (rechaza el valor crudo) y, por defensa en
+profundidad, el clamp en resolve_effective_item."""
+
+
+def resolve_orientation_policy(
+    item_type: ItemType,
+    orientation_policy: OrientationPolicy | None,
+    plan_default: OrientationPolicy | None = None,
+) -> OrientationPolicy:
+    """Precedencia (Fase 5B): item explicito > default del PLAN > default de
+    item_type (system fallback). `plan_default` es opcional y por defecto
+    None -llamar esta funcion con 2 argumentos (como ya hacia todo el codigo
+    antes de Fase 5B, p.ej. LoadItem.resolved_orientation_policy) sigue
+    dando exactamente el mismo resultado de siempre.
+
+    Excepcion dura, verificada y reforzada tras un pedido de seguridad
+    explicito: PANEL_EDGE_ONLY es una regla de seguridad FISICA (la cara de
+    vidrio jamas puede quedar como base), no una preferencia -y por lo tanto
+    NINGUNA fuente puede aflojarla, ni siquiera un `orientation_policy`
+    explicito en el item. Este chequeo va PRIMERO, antes de mirar
+    `orientation_policy`: si item_type es PANEL, el resultado es SIEMPRE
+    PANEL_EDGE_ONLY sin excepcion. En la practica ni el import (PANEL usa
+    orientation_mode="none", nunca expone la columna) ni el request HTTP
+    (validado aca, no solo alli) deberian poder pasar otra cosa para un
+    panel -este chequeo es la ultima linea de defensa, no la unica."""
+    if item_type == ItemType.PANEL:
+        return OrientationPolicy.PANEL_EDGE_ONLY
     if orientation_policy is not None:
         return orientation_policy
+    if plan_default is not None:
+        return plan_default
     return DEFAULT_ORIENTATION_POLICY_BY_ITEM_TYPE[item_type]
 
 
@@ -198,9 +230,42 @@ class LoadItem(BaseModel):
     priority: int = 0
     max_stack_weight: float | None = Field(default=None, description="kg, None = sin limite")
     delivery_sequence: int | None = Field(default=None, description="orden de entrega/parada; None = sin definir")
+    boxes_inside: int | None = Field(
+        default=None,
+        description="Informativo (trazabilidad/inventario): cuantas cajas/unidades individuales contiene este Load "
+        "Unit (tipicamente un pallet). NO participa en packing/collision/orientation -ver core/packer.py, que la "
+        "copia tal cual a PlacedPiece/UnloadedItem sin leerla para ninguna decision fisica.",
+    )
     item_type: ItemType = ItemType.PANEL
     orientation_policy: OrientationPolicy | None = Field(
         default=None, description="None = usar la politica por defecto de item_type"
+    )
+    stackable_override: bool | None = Field(
+        default=None,
+        description="Fase 5B: valor CRUDO de Stackable tal como vino del Excel (None = celda vacia, el import no "
+        "trajo un valor explicito para esta fila). Distinto de `stackable` -que YA viene resuelto/materializado "
+        "con el default del plan al momento del import, por compatibilidad con versiones previas- este campo "
+        "preserva si esa resolucion fue una herencia o una eleccion explicita, para que el motor de packing pueda "
+        "re-resolver correctamente si el default del plan cambia despues del import (ver core/handling_rules.py).",
+    )
+    orientation_override: OrientationPolicy | None = Field(
+        default=None,
+        description="Fase 5B: igual idea que stackable_override, para Orientation. None = el Excel no trajo un "
+        "valor explicito para esta fila (o el perfil de import no expone esa columna, p.ej. PANEL).",
+    )
+    allow_tilt: bool = Field(
+        default=False,
+        description="Fase 5C-FINAL: si este item puede inclinarse (Tilt/Inclination). Ya resuelto/materializado a "
+        "partir de PlanHandlingRules.default_allow_tilt -Tilt es PLAN-LEVEL ONLY (seccion 2/3 del pedido final): "
+        "no existe override de item, ninguna columna de Excel lo alimenta. Default False (deshabilitado salvo que "
+        "el plan lo habilite explicitamente).",
+    )
+    max_tilt_angle: float | None = Field(
+        default=None,
+        ge=0,
+        le=TILT_MAX_ANGLE_DEG,
+        description="Fase 5C-FINAL: angulo MAXIMO de Tilt en grados (magnitud, no signo) ya resuelto del plan -el "
+        "rango real y firmado que puede tomar tilt_angle es [-max_tilt_angle, +max_tilt_angle]. None = sin Tilt.",
     )
 
     @model_validator(mode="before")
@@ -400,6 +465,7 @@ class PlacedPiece(BaseModel):
     priority: int
     max_stack_weight: float | None = None
     delivery_sequence: int | None = None
+    boxes_inside: int | None = None
     locked: bool = False
     x: float
     y: float
@@ -411,6 +477,42 @@ class PlacedPiece(BaseModel):
     source_dimensions: Dimensions3D
     item_type: ItemType = ItemType.PANEL
     orientation_policy: OrientationPolicy | None = None
+    stackable_override: bool | None = Field(
+        default=None, description="Fase 5B: copiado tal cual del LoadItem de origen -ver LoadItem.stackable_override."
+    )
+    orientation_override: OrientationPolicy | None = Field(
+        default=None, description="Fase 5B: copiado tal cual del LoadItem de origen -ver LoadItem.orientation_override."
+    )
+    allow_tilt: bool = Field(
+        default=False,
+        description="Fase 5C-FINAL: copiado del plan ya resuelto (PLAN-LEVEL ONLY -no hay override de item, ver "
+        "LoadItem.allow_tilt).",
+    )
+    max_tilt_angle: float | None = Field(
+        default=None,
+        description="Fase 5C-FINAL: magnitud maxima de Tilt del plan (grados, sin signo) -el rango real firmado "
+        "de tilt_angle es [-max_tilt_angle, +max_tilt_angle].",
+    )
+    tilt_angle: float = Field(
+        default=0.0,
+        description="Fase 5C-FINAL: angulo de Tilt REALMENTE usado para esta pieza, SIGNED (grados; positivo/"
+        "negativo = direccion de inclinacion, 0 = sin inclinar). Es el mismo valor que debe renderizar Scene3D y "
+        "que valida final_validation -nunca 'solo visual'. abs(tilt_angle) <= max_tilt_angle siempre.",
+    )
+    tilt_axis: str | None = Field(
+        default=None,
+        description="Fase 5C: 'x' o 'y' -eje horizontal de Thickness sobre el que se inclina esta pieza en su "
+        "orientacion actual (None = orientacion sin eje de Tilt aplicable, p.ej. item_type != PANEL). Define la "
+        "direccion de inclinacion; ver core/orientation.py:apply_tilt.",
+    )
+    base_dx: float | None = Field(
+        default=None,
+        description="Fase 5C: dx SIN Tilt (0 grados) para la orientacion actual de esta pieza -junto con base_dy/"
+        "base_dz y tilt_axis, permite recalcular la geometria al cambiar manualmente el angulo sin ambiguedad "
+        "(ver core/orientation.py:apply_tilt). None cuando tilt_axis es None (equivale a dx tal cual).",
+    )
+    base_dy: float | None = Field(default=None, description="Fase 5C: dy SIN Tilt -ver base_dx.")
+    base_dz: float | None = Field(default=None, description="Fase 5C: dz SIN Tilt -ver base_dx.")
 
     @model_validator(mode="before")
     @classmethod
@@ -453,10 +555,19 @@ class UnloadedItem(BaseModel):
     priority: int = 0
     max_stack_weight: float | None = None
     delivery_sequence: int | None = None
+    boxes_inside: int | None = None
     reason: str
     reason_code: str
     item_type: ItemType = ItemType.PANEL
     orientation_policy: OrientationPolicy | None = None
+    stackable_override: bool | None = Field(
+        default=None, description="Fase 5B: copiado tal cual del LoadItem de origen -ver LoadItem.stackable_override."
+    )
+    orientation_override: OrientationPolicy | None = Field(
+        default=None, description="Fase 5B: copiado tal cual del LoadItem de origen -ver LoadItem.orientation_override."
+    )
+    allow_tilt: bool = Field(default=False, description="Fase 5C-FINAL: copiado del plan ya resuelto (PLAN-LEVEL ONLY).")
+    max_tilt_angle: float | None = Field(default=None, description="Fase 5C-FINAL: magnitud maxima de Tilt del plan.")
 
     @model_validator(mode="before")
     @classmethod
@@ -556,6 +667,36 @@ class OptimizeResponse(BaseModel):
     alternatives: list[AlternativeSolution]
 
 
+class PlanHandlingRules(BaseModel):
+    """Fase 5B: defaults de HANDLING RULES a nivel de PLAN (elegidos en el
+    wizard, o editados despues en el Workspace) -distintos de:
+      - el default de SISTEMA por item_type (DEFAULT_ORIENTATION_POLICY_BY_ITEM_TYPE,
+        stackable=True), que es el ultimo fallback si ni el item ni el plan
+        dicen nada;
+      - el override EXPLICITO de un item (LoadItem.stackable_override/
+        orientation_override/max_stack_weight), que siempre gana sobre esto.
+
+    Todos los campos son opcionales: None significa "este plan no define un
+    default para esta regla" -en ese caso se cae directo al default de
+    sistema de siempre, asi un request que no manda plan_handling_rules en
+    absoluto (o lo manda vacio) se comporta identico a antes de que este
+    concepto existiera. Ver core/handling_rules.py:resolve_effective_item
+    para el punto unico donde se aplica esta precedencia."""
+
+    default_stackable: bool | None = None
+    default_orientation_policy: OrientationPolicy | None = None
+    default_max_stack_weight: float | None = Field(default=None, description="kg, None = sin limite de plan")
+    default_allow_tilt: bool | None = Field(
+        default=None, description="Fase 5C: None = este plan no define un default de Tilt (cae al system default: False)."
+    )
+    default_max_tilt_angle: float | None = Field(
+        default=None,
+        ge=0,
+        le=TILT_MAX_ANGLE_DEG,
+        description="Fase 5C: grados, None = este plan no define un maximo de Tilt.",
+    )
+
+
 class PackRequest(BaseModel):
     """container_id (catalogo existente) y custom_load_space (Truck/Trailer/
     Container/Custom con dimensiones propias, sin catalogo) son mutuamente
@@ -564,6 +705,7 @@ class PackRequest(BaseModel):
 
     items: list[WindowItem]
     container_id: str | None = None
+    plan_handling_rules: PlanHandlingRules | None = None
     custom_load_space: CustomLoadSpaceRequest | None = None
     optimization_mode: OptimizationMode = OptimizationMode.BEST_SPACE
     weight_balance_mode: WeightBalanceMode = WeightBalanceMode.NORMAL
@@ -614,6 +756,18 @@ class RotatePieceRequest(BaseModel):
     piece_id: str
 
 
+class SetTiltRequest(BaseModel):
+    """Fase 5C-FINAL: cambiar manualmente el angulo de Tilt (SIGNED) de una
+    pieza colocada. Validado en core/manual_move.py:validate_tilt_change
+    (misma fuente de verdad que el packer automatico) -ver
+    core/api/routes.py:set_tilt. El rango real depende del max_tilt_angle
+    efectivo de la pieza (abs(tilt_angle) <= max_tilt_angle); este
+    Field(ge/le) solo acota el dominio seguro absoluto del producto."""
+
+    piece_id: str
+    tilt_angle: float = Field(ge=-TILT_MAX_ANGLE_DEG, le=TILT_MAX_ANGLE_DEG)
+
+
 class LockPieceRequest(BaseModel):
     """Bloquear una pieza para que Optimize Remaining no la mueva."""
 
@@ -636,6 +790,7 @@ class OptimizeRemainingRequest(BaseModel):
     optimization_mode: OptimizationMode | None = None
     weight_balance_mode: WeightBalanceMode | None = None
     loading_anchor: LoadingAnchor | None = None
+    plan_handling_rules: PlanHandlingRules | None = None
 
 
 class ReportMetadata(BaseModel):

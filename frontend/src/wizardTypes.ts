@@ -50,6 +50,10 @@ export interface HandlingRulesDraft {
   aisleWidthMm: number;
   weightBalanceMode: WeightBalanceMode;
   loadingAnchor: LoadingAnchor;
+  /** Fase 5C: solo se muestra/tiene efecto para "panels_fragile" -ver
+   * HandlingRulesStep.tsx. Deshabilitado por defecto (seccion 7 del pedido). */
+  defaultAllowTilt: boolean;
+  defaultMaxTiltAngle: number;
 }
 
 export interface LoadPlanDraft {
@@ -68,6 +72,8 @@ export function defaultHandlingRulesFor(mode: PlanningMode): HandlingRulesDraft 
     aisleWidthMm: 500,
     weightBalanceMode: "normal",
     loadingAnchor: "back_right",
+    defaultAllowTilt: false,
+    defaultMaxTiltAngle: 12,
   };
 
   switch (mode) {

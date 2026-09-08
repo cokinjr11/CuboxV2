@@ -16,13 +16,16 @@ from reportlab.platypus import Image, PageBreak, Paragraph, SimpleDocTemplate, S
 
 from app.models.schemas import (
     ContainerReportRequest,
+    ItemType,
     PackingResult,
     PlacedPiece,
     ReportMetadata,
     SortReportBy,
 )
 
-CONTAINER_REPORT_COLUMNS = ["Code", "Description", "Quantity", "System", "Group", "Width", "Height", "Thickness", "Weight"]
+CONTAINER_REPORT_COLUMNS = [
+    "Code", "Description", "Quantity", "System", "Group", "Width", "Height", "Thickness", "Weight", "Boxes Inside",
+]
 
 _LOGO_PATH = Path(__file__).resolve().parent.parent / "assets" / "cubox-logo.png"
 _LOGO_WIDTH = 140
@@ -41,15 +44,74 @@ _TABLE_STYLE = TableStyle(
 )
 
 
+def _is_palletized_plan(placed: list[PlacedPiece]) -> bool:
+    """Boxes Inside (Fase 6.2) solo tiene sentido para Palletized Load -ver
+    seccion 3 del pedido de Fase 6.1 ("adapt to the active Load Type", "do
+    not globally... if shared by other Load Types"). Un plan es siempre
+    homogeneo en item_type (un solo perfil de import por plan), asi que
+    alcanza con mirar la primera pieza."""
+    return bool(placed) and placed[0].item_type == ItemType.PALLET
+
+
+def _has_tilt_capable_pieces(placed: list[PlacedPiece]) -> bool:
+    """Fase 5C, seccion 37 del pedido: no agregar la columna Tilt si ningun
+    item del plan la soporta. Se agrega SIEMPRE como columna final (nunca
+    se toca CONTAINER_REPORT_COLUMNS/build_guide_step_rows, cuyo shape ya
+    esta testeado) -ver _tilt_label_by_code/_tilt_label_by_group mas abajo."""
+    return any(p.allow_tilt for p in placed)
+
+
+def _format_signed_tilt(tilt_angle: float) -> str:
+    """Fase 5C-FINAL, seccion 36 del pedido: el signo NUNCA se descarta -
+    +12°/-12° son direcciones de inclinacion distintas y operacionalmente
+    relevantes. "" para 0 (sin inclinar)."""
+    return f"{tilt_angle:+g}°" if tilt_angle else ""
+
+
+def _tilt_label_by_code(placed: list[PlacedPiece]) -> dict[str, str]:
+    """Angulo de Tilt a mostrar por code en el Container Load Report.
+    _consolidate_placed (abajo) no incluye tilt_angle en su clave de
+    agrupamiento a proposito -no se toca ese contrato ya testeado-; si
+    varias unidades del mismo code terminan con angulos distintos (packer
+    corner-heuristic, sin garantia de uniformidad), se muestra el de la
+    PRIMERA unidad encontrada -simplificacion aceptable para un reporte
+    consolidado por code, no por pieza individual."""
+    labels: dict[str, str] = {}
+    for p in placed:
+        if p.code not in labels:
+            labels[p.code] = _format_signed_tilt(p.tilt_angle)
+    return labels
+
+
+def _tilt_label_by_group(pieces_by_id: dict[str, PlacedPiece], step_ids: list[str]) -> dict[tuple, str]:
+    """Equivalente a _tilt_label_by_code, pero para un step de la Loading/
+    Unloading Guide (build_guide_step_rows agrupa por code+description
+    dentro del step, no por code solo -mismo criterio aca)."""
+    labels: dict[tuple, str] = {}
+    for pid in step_ids:
+        p = pieces_by_id.get(pid)
+        if p is None:
+            continue
+        key = (p.code, p.description)
+        if key not in labels:
+            labels[key] = _format_signed_tilt(p.tilt_angle)
+    return labels
+
+
 def _consolidate_placed(placed: list[PlacedPiece]) -> list[list]:
     """Agrupa piezas identicas (mismo code/description/dims/weight/system/
-    group) sumando quantity -cada PlacedPiece individual es qty=1, asi que
-    varias unidades del mismo producto quedan como filas separadas si no se
-    consolidan aca."""
+    group/boxes_inside) sumando quantity -cada PlacedPiece individual es
+    qty=1, asi que varias unidades del mismo producto quedan como filas
+    separadas si no se consolidan aca. boxes_inside entra a la clave porque
+    es informacion propia del producto (no deberia variar entre unidades del
+    mismo code, pero si lo hiciera no querriamos mezclarlas silenciosamente)."""
     groups: dict[tuple, int] = {}
     order: list[tuple] = []
     for p in placed:
-        key = (p.code, p.description, p.source_width, p.source_height, p.source_thickness, p.weight, p.system, p.group)
+        key = (
+            p.code, p.description, p.source_width, p.source_height, p.source_thickness, p.weight, p.system, p.group,
+            p.boxes_inside,
+        )
         if key not in groups:
             groups[key] = 0
             order.append(key)
@@ -57,8 +119,9 @@ def _consolidate_placed(placed: list[PlacedPiece]) -> list[list]:
 
     rows = []
     for key in order:
-        code, description, width, height, thickness, weight, system, group = key
-        rows.append([code, description, groups[key], system, group, width, height, thickness, weight])
+        code, description, width, height, thickness, weight, system, group, boxes_inside = key
+        rows.append([code, description, groups[key], system, group, width, height, thickness, weight,
+                     boxes_inside if boxes_inside is not None else ""])
     return rows
 
 
@@ -148,7 +211,15 @@ def build_container_report_pdf(
         story.append(Spacer(1, 12))
 
     rows = build_container_report_table_rows(state, options.sort_by)
-    table_data = [CONTAINER_REPORT_COLUMNS] + rows
+    is_pallet_plan = _is_palletized_plan(state.placed)
+    columns = CONTAINER_REPORT_COLUMNS if is_pallet_plan else CONTAINER_REPORT_COLUMNS[:-1]
+    if not is_pallet_plan:
+        rows = [row[:-1] for row in rows]
+    if _has_tilt_capable_pieces(state.placed):
+        tilt_labels = _tilt_label_by_code(state.placed)
+        columns = columns + ["Tilt"]
+        rows = [row + [tilt_labels.get(row[0], "")] for row in rows]
+    table_data = [columns] + rows
     table = Table(table_data, repeatRows=1)
     table.setStyle(_TABLE_STYLE)
     story.append(table)
@@ -200,9 +271,12 @@ _GUIDE_MARGIN = 36  # 0.5 in -mas espacio util que el default de reportlab, para
 
 
 def build_guide_step_rows(pieces_by_id: dict[str, PlacedPiece], step_ids: list[str]) -> list[list]:
-    """Filas [Code, Description, Quantity] para un paso de una guia -piezas
-    identicas dentro del mismo paso se consolidan sumando quantity, igual
-    criterio que el Container Load Report. Separada de build_*_guide_pdf para
+    """Filas [Code, Description, Quantity, Boxes Inside] para un paso de una
+    guia -piezas identicas dentro del mismo paso se consolidan sumando
+    quantity, igual criterio que el Container Load Report. Boxes Inside es
+    el valor POR UNIDAD (no se multiplica por Quantity) -puramente
+    informativo para trazabilidad/logistica al momento del despacho, ver
+    LoadItem.boxes_inside en schemas.py. Separada de build_*_guide_pdf para
     poder testear el contenido sin parsear el PDF renderizado."""
     groups: dict[tuple, int] = {}
     order: list[tuple] = []
@@ -210,12 +284,15 @@ def build_guide_step_rows(pieces_by_id: dict[str, PlacedPiece], step_ids: list[s
         p = pieces_by_id.get(pid)
         if p is None:
             continue
-        key = (p.code, p.description)
+        key = (p.code, p.description, p.boxes_inside)
         if key not in groups:
             groups[key] = 0
             order.append(key)
         groups[key] += 1
-    return [[code, description, groups[(code, description)]] for code, description in order]
+    return [
+        [code, description, groups[(code, description, boxes_inside)], boxes_inside if boxes_inside is not None else ""]
+        for code, description, boxes_inside in order
+    ]
 
 
 def _step_card(
@@ -226,16 +303,28 @@ def _step_card(
     styles,
     image_width: int,
     image_height: int,
+    is_pallet_plan: bool,
+    has_tilt: bool = False,
 ) -> list:
     """Contenido de un "Step Card": titulo + imagen 3D + tabla Code/
-    Description/Quantity. Se usa suelto (step final impar, a ancho completo)
-    o como celda de la tabla exterior del grid 2x2."""
+    Description/Quantity(/Boxes Inside solo si es un plan Palletized Load)
+    (/Tilt solo si algun item del plan lo soporta, Fase 5C). Se usa suelto
+    (step final impar, a ancho completo) o como celda de la tabla exterior
+    del grid 2x2."""
     card: list = [Paragraph(f"Step {step_number}", styles["Heading3"])]
     if image_b64:
         card.append(Image(_decode_png(image_b64), width=image_width, height=image_height))
         card.append(Spacer(1, 4))
     rows = build_guide_step_rows(pieces_by_id, step_ids)
-    table = Table([["Code", "Description", "Qty"]] + rows, repeatRows=1)
+    header = ["Code", "Description", "Qty", "Boxes Inside"]
+    if not is_pallet_plan:
+        header = header[:-1]
+        rows = [row[:-1] for row in rows]
+    if has_tilt:
+        tilt_labels = _tilt_label_by_group(pieces_by_id, step_ids)
+        header = header + ["Tilt"]
+        rows = [row + [tilt_labels.get((row[0], row[1]), "")] for row in rows]
+    table = Table([header] + rows, repeatRows=1)
     table.setStyle(_STEP_TABLE_STYLE)
     card.append(table)
     return card
@@ -288,6 +377,8 @@ def _build_guide_pdf(
 
     pieces_by_id = {p.id: p for p in state.placed}
     pages = _batch_steps_for_pages(steps, pieces_by_id)
+    is_pallet_plan = _is_palletized_plan(state.placed)
+    has_tilt = _has_tilt_capable_pieces(state.placed)
 
     def image_for(i: int) -> str | None:
         return step_images_png_base64[i] if i < len(step_images_png_base64) else None
@@ -296,11 +387,17 @@ def _build_guide_pdf(
         if len(page_step_indices) == 1:
             idx = page_step_indices[0]
             story.extend(
-                _step_card(idx + 1, steps[idx], image_for(idx), pieces_by_id, styles, _FULL_IMAGE_WIDTH, _FULL_IMAGE_HEIGHT)
+                _step_card(
+                    idx + 1, steps[idx], image_for(idx), pieces_by_id, styles,
+                    _FULL_IMAGE_WIDTH, _FULL_IMAGE_HEIGHT, is_pallet_plan, has_tilt,
+                )
             )
         else:
             cards = [
-                _step_card(idx + 1, steps[idx], image_for(idx), pieces_by_id, styles, _GRID_IMAGE_WIDTH, _GRID_IMAGE_HEIGHT)
+                _step_card(
+                    idx + 1, steps[idx], image_for(idx), pieces_by_id, styles,
+                    _GRID_IMAGE_WIDTH, _GRID_IMAGE_HEIGHT, is_pallet_plan, has_tilt,
+                )
                 for idx in page_step_indices
             ]
             rows = []

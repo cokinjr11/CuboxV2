@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { downloadImportTemplate, importItemsExcel } from "../../api/client";
 import type { ImportDefaults, ImportPreview, ItemType } from "../../types";
 import { downloadBlob } from "../../utils/download";
+import { extractErrorMessage } from "../../utils/errors";
 
 const PROFILE_LABELS: Record<ItemType, string> = {
   box: "Loose Boxes",
@@ -52,7 +53,7 @@ export function ImportStep({ profile, value, onChange, defaults }: Props) {
       const preview = await importItemsExcel(file, profile, defaults);
       onChange(preview);
     } catch (e: any) {
-      setError(e?.response?.data?.detail || "Could not read the Excel file. Please verify it is a valid .xlsx file.");
+      setError(extractErrorMessage(e, "Could not read the Excel file. Please verify it is a valid .xlsx file."));
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";

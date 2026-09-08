@@ -47,6 +47,10 @@ function buildInitialWorkspace(draft: LoadPlanDraft | null): InitialWorkspaceCon
       clearanceMm: draft.handlingRules.clearanceMm,
       weightBalanceMode: draft.handlingRules.weightBalanceMode,
       loadingAnchor: draft.handlingRules.loadingAnchor,
+      defaultStackable: draft.handlingRules.defaultStackable,
+      orientationPolicy: draft.handlingRules.orientationPolicy,
+      defaultAllowTilt: draft.handlingRules.defaultAllowTilt,
+      defaultMaxTiltAngle: draft.handlingRules.defaultAllowTilt ? draft.handlingRules.defaultMaxTiltAngle : null,
     },
   };
 }

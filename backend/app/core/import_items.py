@@ -49,6 +49,9 @@ _COLUMN_ALIASES: dict[str, str] = {
     "deliverysequence": "delivery_sequence",
     "stop": "delivery_sequence",
     "orientation": "orientation",
+    "boxesinside": "boxes_inside",
+    # Fase 5C-FINAL: Allow Tilt/Max Tilt Angle NO son columnas de Excel -Tilt
+    # es PLAN-LEVEL ONLY (Wizard -> Handling Rules), ver core/handling_rules.py.
 }
 
 _ORIENTATION_ALIASES: dict[str, OrientationPolicy] = {
@@ -100,6 +103,7 @@ class _ProfileSpec:
     default_orientation: OrientationPolicy | None
     legacy_stackable_default: bool  # True = default Si (perfil PANEL, igual que el importador legacy)
     allow_system: bool
+    allow_boxes_inside: bool = False  # Fase 6.2: solo PALLET -ver seccion 3 del pedido de Fase 6.1 (adaptar por Load Type)
 
 
 PROFILE_SPECS: dict[ItemType, _ProfileSpec] = {
@@ -131,6 +135,7 @@ PROFILE_SPECS: dict[ItemType, _ProfileSpec] = {
         default_orientation=OrientationPolicy.UPRIGHT,
         legacy_stackable_default=False,
         allow_system=False,
+        allow_boxes_inside=True,
     ),
     ItemType.PANEL: _ProfileSpec(
         required=("code", "quantity", "width", "height", "thickness", "weight"),
@@ -249,13 +254,27 @@ def _parse_row(
         else:
             stackable = parsed_bool
 
+    # Fase 5B: valor CRUDO (None = celda vacia -> herencia), independiente de
+    # `stackable` de arriba (que ya viene materializado con el default del
+    # plan/sistema, por compatibilidad). Ver core/handling_rules.py -esto es
+    # lo que permite re-resolver correctamente si el default del plan cambia
+    # DESPUES de este import, en vez de quedar pegado al que habia ahora.
+    stackable_override = _parse_boolean_or_none(raw_stackable) if raw_stackable not in (None, "") else None
+
     # Misma precedencia para Orientation, pero el default del plan solo
     # aplica cuando el perfil tiene una columna de Orientation real
     # (orientation_mode != "none" -PALLET/PANEL tienen su politica fija, un
     # default de plan no tendria sentido ahi).
     orientation_policy = spec.default_orientation
+    orientation_override: OrientationPolicy | None = None
     if spec.orientation_mode != "none":
         raw_orientation = values.get("orientation")
+        if raw_orientation not in (None, ""):
+            # Fase 5B: valor CRUDO (None = celda vacia o perfil sin columna
+            # real de Orientation -> herencia), independiente de
+            # `orientation_policy` de arriba. Ver comentario equivalente para
+            # stackable_override, misma razon.
+            orientation_override = _parse_orientation(raw_orientation)
         if raw_orientation in (None, ""):
             if defaults is not None and defaults.orientation_policy is not None:
                 orientation_policy = defaults.orientation_policy
@@ -300,6 +319,31 @@ def _parse_row(
         except (TypeError, ValueError):
             err("delivery_sequence", "INVALID_NUMBER", "Delivery Sequence debe ser un numero entero")
 
+    # Puramente informativo (trazabilidad/inventario, ver schemas.py): cuantas
+    # cajas/unidades individuales contiene este Load Unit. Nunca participa en
+    # precedencia de defaults del plan (no tendria sentido un "default" de
+    # cuantas cajas trae un pallet) ni en ninguna decision fisica del packer.
+    # Solo tiene sentido para PALLET (seccion 3 del pedido: "adapt to the
+    # active Load Type") -si otro perfil trae esa columna igual (por ejemplo
+    # copiada a mano de un template viejo), se ignora en vez de parsearse.
+    boxes_inside = None
+    if spec.allow_boxes_inside and values.get("boxes_inside") not in (None, ""):
+        try:
+            boxes_inside = int(values["boxes_inside"])
+            if boxes_inside <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            err("boxes_inside", "INVALID_NUMBER", "Boxes Inside debe ser un entero mayor a 0")
+
+    # Fase 5C-FINAL: Tilt/Inclination NO tiene columnas de Excel -es
+    # PLAN-LEVEL ONLY (Wizard -> Handling Rules, ver core/handling_rules.py:
+    # resolve_plan_tilt). LoadItem.allow_tilt/max_tilt_angle quedan en su
+    # default (False/None) al importar; se resuelven recien al empacar, a
+    # partir de PlanHandlingRules -nunca de una fila de Excel. Un archivo
+    # viejo (de Fase 5C, con columnas "Allow Tilt"/"Max Tilt Angle") sigue
+    # importando normalmente: esas columnas simplemente se ignoran (no
+    # aparecen en _COLUMN_ALIASES, asi que ni siquiera llegan a `values`).
+
     if errors or dimensions is None or not code or quantity is None or weight is None:
         return None, errors, warnings
 
@@ -312,11 +356,14 @@ def _parse_row(
         system=str(values.get("system") or "").strip() if spec.allow_system else "",
         group=str(values.get("group") or "").strip(),
         stackable=stackable,
+        stackable_override=stackable_override,
         priority=priority,
         max_stack_weight=max_stack_weight,
         delivery_sequence=delivery_sequence,
+        boxes_inside=boxes_inside,
         item_type=spec.item_type,
         orientation_policy=orientation_policy,
+        orientation_override=orientation_override,
     )
     return item, errors, warnings
 

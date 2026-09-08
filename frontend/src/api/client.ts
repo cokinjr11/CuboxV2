@@ -11,6 +11,7 @@ import type {
   OptimizationMode,
   OptimizeResponse,
   PackingResult,
+  PlanHandlingRules,
   ReportDirection,
   ReportMetadata,
   SortReportBy,
@@ -54,6 +55,7 @@ export async function importItemsExcel(file: File, profile: ItemType, defaults?:
   form.append("profile", profile);
   if (defaults?.orientationPolicy) form.append("default_orientation_policy", defaults.orientationPolicy);
   if (defaults?.stackable !== undefined) form.append("default_stackable", String(defaults.stackable));
+  // Fase 5C-FINAL: Tilt es PLAN-LEVEL ONLY, sin equivalente de import default.
   const r = await api.post<ImportPreview>("/import-items-excel", form, {
     headers: { "Content-Type": "multipart/form-data" },
   });
@@ -72,6 +74,10 @@ export interface PackOptions {
   clearanceMm: number;
   weightBalanceMode: WeightBalanceMode;
   loadingAnchor: LoadingAnchor;
+  /** Fase 5B: defaults del plan (Default Stackable / Default Orientation),
+   * reenviados en CADA pack para que items "inherit" (sin override propio)
+   * se resuelvan con el default ACTUAL, aunque haya cambiado desde el import. */
+  planHandlingRules?: PlanHandlingRules;
 }
 
 // CUBOX 2.0 Fase 5: el Load Space a empaquetar es o un preset del catalogo
@@ -96,6 +102,7 @@ export async function packContainer(
     clearance_mm: options.clearanceMm,
     weight_balance_mode: options.weightBalanceMode,
     loading_anchor: options.loadingAnchor,
+    plan_handling_rules: options.planHandlingRules,
   });
   return r.data;
 }
@@ -104,11 +111,13 @@ export async function optimizeRemaining(options: {
   optimizationMode: OptimizationMode;
   weightBalanceMode: WeightBalanceMode;
   loadingAnchor: LoadingAnchor;
+  planHandlingRules?: PlanHandlingRules;
 }): Promise<OptimizeResponse> {
   const r = await api.post<OptimizeResponse>("/optimize-remaining", {
     optimization_mode: options.optimizationMode,
     weight_balance_mode: options.weightBalanceMode,
     loading_anchor: options.loadingAnchor,
+    plan_handling_rules: options.planHandlingRules,
   });
   return r.data;
 }
@@ -252,6 +261,15 @@ export async function rotatePiece(pieceId: string): Promise<PackingResult> {
 
 export async function turnPiece(pieceId: string): Promise<PackingResult> {
   const r = await api.post<PackingResult>("/turn-piece", { piece_id: pieceId });
+  return r.data;
+}
+
+// Fase 5C: cambiar el angulo de Tilt de una pieza ya colocada. El backend
+// (core/manual_move.py:validate_tilt_change) es la unica fuente de verdad -
+// rechaza (409) si el angulo excede el maximo efectivo, la pieza no admite
+// Tilt, o la nueva geometria deja de ser valida (colision/soporte/limites).
+export async function setTilt(pieceId: string, tiltAngle: number): Promise<PackingResult> {
+  const r = await api.post<PackingResult>("/set-tilt", { piece_id: pieceId, tilt_angle: tiltAngle });
   return r.data;
 }
 

@@ -106,6 +106,63 @@ def test_pallet_import_defaults_to_upright():
 
 
 # ---------------------------------------------------------------------------
+# Boxes Inside (informativo, trazabilidad/inventario) - Fase 6.2.
+# ---------------------------------------------------------------------------
+
+
+def test_pallet_import_parses_boxes_inside_when_present():
+    r = _import(
+        "pallet",
+        ["Code", "Quantity", "Length", "Width", "Height", "Weight", "Boxes Inside", "Group"],
+        [["PAL1", 4, 1200, 1000, 1650, 780, 40, "Comida de perro"]],
+    )
+    preview = r.json()
+    assert preview["is_valid"] is True
+    item = preview["items"][0]
+    assert item["boxes_inside"] == 40
+    assert item["group"] == "Comida de perro"
+
+
+def test_pallet_import_boxes_inside_is_optional():
+    r = _import("pallet", ["Code", "Quantity", "Length", "Width", "Height", "Weight"], [["PAL1", 4, 1200, 1000, 1650, 780]])
+    preview = r.json()
+    assert preview["is_valid"] is True
+    assert preview["items"][0]["boxes_inside"] is None
+
+
+def test_pallet_import_rejects_invalid_boxes_inside():
+    r = _import(
+        "pallet",
+        ["Code", "Quantity", "Length", "Width", "Height", "Weight", "Boxes Inside"],
+        [["PAL1", 4, 1200, 1000, 1650, 780, "not-a-number"]],
+    )
+    preview = r.json()
+    assert preview["is_valid"] is False
+    assert any(e["code"] == "INVALID_NUMBER" and e["column"] == "boxes_inside" for e in preview["errors"])
+
+
+def test_box_import_ignores_boxes_inside_column():
+    """Boxes Inside solo esta habilitado para PALLET (seccion 3: adaptar
+    terminologia/campos al Load Type activo) -si un Excel de BOX trae esa
+    columna igual (copiada a mano), se ignora en vez de parsearse."""
+    r = _import(
+        "box",
+        ["Code", "Quantity", "Length", "Width", "Height", "Weight", "Boxes Inside"],
+        [["B1", 3, 600, 400, 300, 25, 40]],
+    )
+    preview = r.json()
+    assert preview["is_valid"] is True
+    assert preview["items"][0]["boxes_inside"] is None
+
+
+def test_pallet_template_has_boxes_inside_column_but_box_template_does_not():
+    pallet_headers = _template_headers("pallet")
+    box_headers = _template_headers("box")
+    assert "Boxes Inside" in pallet_headers
+    assert "Boxes Inside" not in box_headers
+
+
+# ---------------------------------------------------------------------------
 # TEST E - import de PANEL: mapeo canonico correcto, regla de vidrio.
 # ---------------------------------------------------------------------------
 
@@ -267,6 +324,63 @@ def test_panel_without_stackable_keeps_legacy_default_true():
     assert preview["is_valid"] is True
     assert preview["items"][0]["stackable"] is True
     assert preview["warnings"] == []
+
+
+# ---------------------------------------------------------------------------
+# Fase 5B: stackable_override/orientation_override -el valor CRUDO debe
+# distinguir celda vacia (None, herencia) de un valor explicito, independiente
+# de `stackable`/`orientation_policy` (que siguen materializados como antes).
+# ---------------------------------------------------------------------------
+
+
+def test_stackable_override_is_none_when_excel_cell_is_blank():
+    r = _import("box", ["Code", "Quantity", "Length", "Width", "Height", "Weight", "Stackable"], [["BOX1", 1, 600, 400, 300, 25, ""]])
+    item = r.json()["items"][0]
+    assert item["stackable_override"] is None
+    assert item["stackable"] is False  # system fallback materializado, sin cambios
+
+
+def test_stackable_override_captures_explicit_true():
+    r = _import("box", ["Code", "Quantity", "Length", "Width", "Height", "Weight", "Stackable"], [["BOX1", 1, 600, 400, 300, 25, "Yes"]])
+    item = r.json()["items"][0]
+    assert item["stackable_override"] is True
+
+
+def test_stackable_override_captures_explicit_false_distinctly_from_none():
+    """El caso critico de la seccion 5: False explicito no debe confundirse
+    con 'no vino nada' (None)."""
+    r = _import("box", ["Code", "Quantity", "Length", "Width", "Height", "Weight", "Stackable"], [["BOX1", 1, 600, 400, 300, 25, "No"]])
+    item = r.json()["items"][0]
+    assert item["stackable_override"] is False
+    assert item["stackable_override"] is not None
+
+
+def test_orientation_override_is_none_when_excel_cell_is_blank():
+    r = _import(
+        "box",
+        ["Code", "Quantity", "Length", "Width", "Height", "Weight", "Orientation"],
+        [["BOX1", 1, 600, 400, 300, 25, ""]],
+    )
+    item = r.json()["items"][0]
+    assert item["orientation_override"] is None
+
+
+def test_orientation_override_captures_explicit_value():
+    r = _import(
+        "box",
+        ["Code", "Quantity", "Length", "Width", "Height", "Weight", "Orientation"],
+        [["BOX1", 1, 600, 400, 300, 25, "UPRIGHT"]],
+    )
+    item = r.json()["items"][0]
+    assert item["orientation_override"] == "upright"
+
+
+def test_orientation_override_is_always_none_for_panel_profile():
+    """PANEL no expone columna de Orientation (orientation_mode="none") -el
+    override crudo debe quedar None siempre, sin importar nada del Excel."""
+    r = _import("panel", ["Code", "Quantity", "Width", "Height", "Thickness", "Weight"], [["W1", 1, 1200, 2000, 100, 45]])
+    item = r.json()["items"][0]
+    assert item["orientation_override"] is None
 
 
 # ---------------------------------------------------------------------------

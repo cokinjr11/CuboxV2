@@ -1,17 +1,21 @@
-import type { UnloadedItem } from "../types";
+import type { ItemType, UnloadedItem } from "../types";
 import { formatDimensions } from "../utils/dimensions";
+import { itemTypeNoun } from "../utils/itemTypeLabels";
 
 interface Props {
   items: UnloadedItem[];
   insertingItemId: string | null;
+  activeItemType?: ItemType;
   onStartPlacing: (item: UnloadedItem) => void;
   onCancelPlacing: () => void;
 }
 
-export function UnloadedPanel({ items, insertingItemId, onStartPlacing, onCancelPlacing }: Props) {
+export function UnloadedPanel({ items, insertingItemId, activeItemType, onStartPlacing, onCancelPlacing }: Props) {
+  const isPalletPlan = activeItemType === "pallet";
+  const heading = isPalletPlan ? `Unloaded ${itemTypeNoun("pallet", true)}` : "Unloaded Items";
   return (
     <div className="panel">
-      <h2>Unloaded Items ({items.length})</h2>
+      <h2>{heading} ({items.length})</h2>
       {items.length === 0 ? (
         <p className="hint">Todas las piezas fueron cargadas.</p>
       ) : (
@@ -26,6 +30,7 @@ export function UnloadedPanel({ items, insertingItemId, onStartPlacing, onCancel
                 <th>Group</th>
                 <th>System</th>
                 <th>Priority</th>
+                {isPalletPlan && <th>Boxes Inside</th>}
                 <th>Reason</th>
                 <th></th>
               </tr>
@@ -40,6 +45,7 @@ export function UnloadedPanel({ items, insertingItemId, onStartPlacing, onCancel
                   <td>{it.group || "-"}</td>
                   <td>{it.system || "-"}</td>
                   <td>{it.priority}</td>
+                  {isPalletPlan && <td>{it.boxes_inside ?? "-"}</td>}
                   <td className="reason">{it.reason}</td>
                   <td>
                     {insertingItemId === it.id ? (

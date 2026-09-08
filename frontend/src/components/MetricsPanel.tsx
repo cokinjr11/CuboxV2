@@ -1,13 +1,30 @@
-import type { PackingMetrics } from "../types";
+import type { ItemType, PackingMetrics } from "../types";
+import { itemTypeNoun } from "../utils/itemTypeLabels";
 
-export function MetricsPanel({ metrics }: { metrics: PackingMetrics }) {
+interface Props {
+  metrics: PackingMetrics;
+  /** Fase 6.1: cuando el plan activo es Palletized Load, los contadores
+   * genericos (piezas/cargadas/no cargadas) se relabelean con vocabulario de
+   * pallet y se agrega Pallet Utilization -reusando los MISMOS 3 numeros
+   * que ya devuelve el packer para cualquier ItemType (nada nuevo calculado
+   * en el backend, ver seccion 5-6 del pedido). */
+  activeItemType?: ItemType;
+}
+
+export function MetricsPanel({ metrics, activeItemType }: Props) {
+  const isPallet = activeItemType === "pallet";
+  const utilizationPct = metrics.total_pieces > 0 ? Math.round((metrics.loaded_pieces / metrics.total_pieces) * 100) : 100;
+
   return (
     <div className="panel">
       <h2>Resultados</h2>
       <div className="metrics-grid">
-        <Stat label="Total piezas" value={metrics.total_pieces} />
-        <Stat label="Cargadas" value={metrics.loaded_pieces} />
-        <Stat label="No cargadas" value={metrics.unloaded_pieces} />
+        <Stat label={isPallet ? `Total ${itemTypeNoun("pallet", true)}` : "Total piezas"} value={metrics.total_pieces} />
+        <Stat label={isPallet ? `${itemTypeNoun("pallet", true)} Loaded` : "Cargadas"} value={metrics.loaded_pieces} />
+        <Stat label={isPallet ? `${itemTypeNoun("pallet", true)} Unloaded` : "No cargadas"} value={metrics.unloaded_pieces} />
+        {isPallet && (
+          <Stat label="Pallet Utilization" value={`${metrics.loaded_pieces} / ${metrics.total_pieces} (${utilizationPct}%)`} />
+        )}
         <Stat label="Volumen usado" value={`${metrics.used_volume_pct}%`} />
         <Stat label="Uso de piso" value={`${metrics.floor_utilization_pct}%`} />
         <Stat label="Peso total" value={`${metrics.total_weight} kg`} />

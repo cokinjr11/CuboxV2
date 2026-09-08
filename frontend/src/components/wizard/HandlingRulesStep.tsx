@@ -1,4 +1,4 @@
-import type { LoadingAnchor, OrientationPolicy, WeightBalanceMode } from "../../types";
+import { TILT_MAX_ANGLE_DEG, type LoadingAnchor, type OrientationPolicy, type WeightBalanceMode } from "../../types";
 import type { HandlingRulesDraft, PlanningMode } from "../../wizardTypes";
 
 const ORIENTATION_OPTIONS: { value: OrientationPolicy; label: string }[] = [
@@ -28,7 +28,10 @@ export function HandlingRulesStep({ mode, value, onChange }: Props) {
   return (
     <div className="wizard-step-body">
       <h2>Handling Rules</h2>
-      <p className="step-subtitle">These are plan defaults. Values explicitly set in your Excel file will always win over these defaults.</p>
+      <p className="step-subtitle">
+        These are plan defaults. Values explicitly set for an item can override plan defaults, unless a mandatory
+        Cubox Hard Constraint applies. Tilt has no item-level override — it is set here, for the whole plan.
+      </p>
 
       {mode === "loose_boxes" && <OrientationField value={value.orientationPolicy} onChange={(v) => onChange({ orientationPolicy: v })} />}
 
@@ -44,6 +47,14 @@ export function HandlingRulesStep({ mode, value, onChange }: Props) {
           <strong>Keep On Edge is enabled and locked.</strong> The main panel face (Width × Height) can never be used as
           the supporting base.
         </div>
+      )}
+
+      {mode === "panels_fragile" && (
+        <TiltField
+          allowTilt={value.defaultAllowTilt}
+          maxTiltAngle={value.defaultMaxTiltAngle}
+          onChange={(patch) => onChange(patch)}
+        />
       )}
 
       {mode === "custom_load" && <OrientationField value={value.orientationPolicy} onChange={(v) => onChange({ orientationPolicy: v })} />}
@@ -149,6 +160,56 @@ function FloorRotationField({ value, onChange }: { value: OrientationPolicy; onC
           Not Allowed (Fixed orientation, no rotation)
         </label>
       </div>
+    </div>
+  );
+}
+
+// Fase 5C: Tilt / Inclination Control -solo aplica a Panels & Fragile en
+// esta fase (seccion 8 del pedido). El campo de angulo solo se muestra
+// cuando Allow Tilt esta activo (seccion 14 del pedido); el backend
+// (Field(le=TILT_MAX_ANGLE_DEG) + resolver) sigue siendo la autoridad, esto
+// solo evita mandar un request obviamente invalido (seccion 15 del pedido).
+function TiltField({
+  allowTilt,
+  maxTiltAngle,
+  onChange,
+}: {
+  allowTilt: boolean;
+  maxTiltAngle: number;
+  onChange: (patch: Partial<HandlingRulesDraft>) => void;
+}) {
+  return (
+    <div className="wizard-field">
+      <label>Tilt / Inclination</label>
+      <div className="wizard-checkbox-row">
+        <input
+          id="hr-allow-tilt"
+          type="checkbox"
+          checked={allowTilt}
+          onChange={(e) => onChange({ defaultAllowTilt: e.target.checked })}
+        />
+        <label htmlFor="hr-allow-tilt">Allow Tilt</label>
+      </div>
+      {allowTilt && (
+        <div className="wizard-field" style={{ maxWidth: 220 }}>
+          <label htmlFor="hr-max-tilt">Maximum Tilt Angle (°)</label>
+          <input
+            id="hr-max-tilt"
+            type="number"
+            min={0}
+            max={TILT_MAX_ANGLE_DEG}
+            value={maxTiltAngle || ""}
+            onChange={(e) => {
+              if (e.target.value === "") {
+                onChange({ defaultMaxTiltAngle: 0 });
+                return;
+              }
+              const clamped = Math.min(TILT_MAX_ANGLE_DEG, Math.max(0, Number(e.target.value)));
+              onChange({ defaultMaxTiltAngle: Number.isFinite(clamped) ? clamped : 0 });
+            }}
+          />
+        </div>
+      )}
     </div>
   );
 }

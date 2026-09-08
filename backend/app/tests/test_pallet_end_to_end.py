@@ -24,7 +24,7 @@ from openpyxl import Workbook
 from app.core.final_validation import validate_for_export
 from app.core.orientation import get_valid_orientations
 from app.core.packer import compute_metrics, pack_container
-from app.core.pdf_export import build_container_report_pdf
+from app.core.pdf_export import build_container_report_pdf, build_container_report_table_rows, build_guide_step_rows
 from app.core.road_weight import evaluate_road_weight, weight_point_from_placed
 from app.core.sequence import compute_load_sequence, compute_unload_sequence
 from app.main import app
@@ -70,14 +70,17 @@ def _import_pallet(rows, headers=None, **form_extra):
 
 
 def _pallet_item(length=1200, width=1000, height=1650, weight=780, quantity=1, code="PAL",
-                  orientation_policy=OrientationPolicy.UPRIGHT, stackable=False, max_stack_weight=None):
+                  orientation_policy=OrientationPolicy.UPRIGHT, stackable=False, max_stack_weight=None,
+                  boxes_inside=None, group=""):
     """Un pallet ya construido: Height es la altura TOTAL cargada, Weight el
     peso TOTAL cargado (seccion 5 del pedido) -no se modela por separado el
-    pallet de madera ni las cajas encima, eso queda para Pallet Builder."""
+    pallet de madera ni las cajas encima, eso queda para Pallet Builder.
+    boxes_inside (Fase 6.2) es puramente informativo -trazabilidad/inventario,
+    nunca participa en packing."""
     return WindowItem(
         code=code, dimensions=Dimensions3D(length=length, width=width, height=height), weight=weight, quantity=quantity,
         item_type=ItemType.PALLET, orientation_policy=orientation_policy,
-        stackable=stackable, max_stack_weight=max_stack_weight,
+        stackable=stackable, max_stack_weight=max_stack_weight, boxes_inside=boxes_inside, group=group,
     )
 
 
@@ -489,6 +492,52 @@ def test_p_pallet_plan_exports_container_report_pdf_without_crashing():
     pdf_bytes = build_container_report_pdf(packing_result, ContainerReportRequest(include_overview_image=False))
 
     assert pdf_bytes[:4] == b"%PDF"
+
+
+# ---------------------------------------------------------------------------
+# Boxes Inside (Fase 6.2): informativo -trazabilidad/logistica/inventario-
+# sobrevive Import -> Pack -> Container Report / Loading Guide (la "guia de
+# despacho"). Nunca participa en packing (mismo dataset con y sin el campo
+# da exactamente el mismo layout fisico).
+# ---------------------------------------------------------------------------
+
+
+def test_boxes_inside_survives_into_container_report_and_never_affects_packing():
+    space = build_custom_load_space("Test Space", LoadSpaceType.CONTAINER, 12000, 2400, 3500, 50000)
+    with_boxes = _pallet_item(code="PAL-001", weight=780, quantity=3, boxes_inside=40, group="Comida de perro")
+    without_boxes = _pallet_item(code="PAL-002", weight=780, quantity=3)
+
+    result_with = pack_container([with_boxes], space, strategy="highest_priority")
+    result_without = pack_container([without_boxes], space, strategy="highest_priority")
+
+    # Mismo layout fisico exacto (x/y/z/dx/dy/dz) con o sin boxes_inside.
+    for p_with, p_without in zip(result_with.placed, result_without.placed):
+        assert (p_with.x, p_with.y, p_with.z, p_with.dx, p_with.dy, p_with.dz) == (
+            p_without.x, p_without.y, p_without.z, p_without.dx, p_without.dy, p_without.dz,
+        )
+
+    metrics = compute_metrics(space, result_with.placed, result_with.unloaded)
+    packing_result = PackingResult(
+        container=space, placed=result_with.placed, unloaded=result_with.unloaded, metrics=metrics,
+        load_sequence=[p.id for p in result_with.placed], unload_sequence=[p.id for p in result_with.placed],
+    )
+    from app.models.schemas import SortReportBy
+
+    rows = build_container_report_table_rows(packing_result, SortReportBy.GROUP)
+    assert len(rows) == 1  # 3 pallets identicos -> 1 fila consolidada
+    row = rows[0]
+    assert row[0] == "PAL-001"
+    assert row[4] == "Comida de perro"  # Group
+    assert row[2] == 3  # Quantity
+    assert row[-1] == 40  # Boxes Inside
+
+    pieces_by_id = {p.id: p for p in result_with.placed}
+    guide_rows = build_guide_step_rows(pieces_by_id, [p.id for p in result_with.placed])
+    assert len(guide_rows) == 1
+    code, description, qty, boxes_inside = guide_rows[0]
+    assert code == "PAL-001"
+    assert qty == 3
+    assert boxes_inside == 40
 
 
 # ---------------------------------------------------------------------------

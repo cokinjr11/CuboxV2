@@ -8,6 +8,7 @@ completas (deduplicadas) para poder mostrarlas como alternativas.
 
 import logging
 
+from app.core.handling_rules import resolve_effective_item
 from app.core.packer import pack_container
 from app.core.reserved_zones import ReservedZone
 from app.core.scoring import score_breakdown, score_solution
@@ -18,6 +19,7 @@ from app.models.schemas import (
     OptimizationMode,
     PackingResult,
     PlacedPiece,
+    PlanHandlingRules,
     WeightBalanceMode,
     WindowItem,
 )
@@ -39,7 +41,13 @@ def run_optimization(
     clearance: float = 0.0,
     weight_balance_mode: WeightBalanceMode = WeightBalanceMode.NORMAL,
     preplaced: list[PlacedPiece] | None = None,
+    plan_handling_rules: PlanHandlingRules | None = None,
 ) -> tuple[PackingResult, list[AlternativeSolution]]:
+    # Fase 5B: resuelto UNA sola vez aca (item override > plan default >
+    # system default, ver core/handling_rules.py) -pack_container recibe
+    # items ya con stackable/orientation_policy/max_stack_weight efectivos,
+    # sin cambiar su propia firma ni su logica interna en absoluto.
+    items = [resolve_effective_item(item, plan_handling_rules) for item in items]
     candidates: list[AlternativeSolution] = []
 
     for strategy in STRATEGIES:

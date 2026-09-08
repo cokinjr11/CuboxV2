@@ -1,10 +1,29 @@
 import { useRef, useState } from "react";
-import type { ContainerSpec, CustomLoadSpaceRequestBody, LoadingAnchor, OptimizationMode, WeightBalanceMode, WindowItem } from "../types";
+import {
+  TILT_MAX_ANGLE_DEG,
+  type ContainerSpec,
+  type CustomLoadSpaceRequestBody,
+  type LoadingAnchor,
+  type OptimizationMode,
+  type OrientationPolicy,
+  type WeightBalanceMode,
+  type WindowItem,
+} from "../types";
+import { itemTypeNoun } from "../utils/itemTypeLabels";
 
 const WEIGHT_BALANCE_OPTIONS: { value: WeightBalanceMode; label: string }[] = [
   { value: "ignore", label: "Ignore" },
   { value: "normal", label: "Normal" },
   { value: "important", label: "Important" },
+];
+
+// Fase 5B: default de plan para Orientation -PANEL_EDGE_ONLY nunca se
+// ofrece aca (es una regla de seguridad fija de Panels & Fragile, no una
+// preferencia de plan; ver core/handling_rules.py, seccion 14 del pedido).
+const ORIENTATION_DEFAULT_OPTIONS: { value: OrientationPolicy; label: string }[] = [
+  { value: "free", label: "Free Rotation" },
+  { value: "upright", label: "Keep Upright" },
+  { value: "fixed", label: "Fixed" },
 ];
 
 const LOADING_ANCHOR_OPTIONS: { value: LoadingAnchor; label: string }[] = [
@@ -30,6 +49,15 @@ interface Props {
   clearanceMm: number;
   weightBalanceMode: WeightBalanceMode;
   loadingAnchor: LoadingAnchor;
+  /** Fase 5B: defaults del PLAN para Handling Rules -editables aca para que
+   * Scenario F (cambiar el default despues del import) sea posible sin
+   * volver al wizard, ademas de reflejarse en cada pack/optimize-remaining. */
+  defaultStackable: boolean;
+  orientationPolicy: OrientationPolicy;
+  /** Fase 5C: mismo criterio que defaultStackable/orientationPolicy -solo
+   * tiene efecto real (y solo se muestra) cuando el plan es Panels & Fragile. */
+  defaultAllowTilt: boolean;
+  defaultMaxTiltAngle: number | null;
   loading: boolean;
   error: string;
   onFileSelected: (file: File) => void;
@@ -40,6 +68,10 @@ interface Props {
   onClearanceChange: (mm: number) => void;
   onWeightBalanceModeChange: (mode: WeightBalanceMode) => void;
   onLoadingAnchorChange: (anchor: LoadingAnchor) => void;
+  onDefaultStackableChange: (stackable: boolean) => void;
+  onOrientationPolicyChange: (policy: OrientationPolicy) => void;
+  onDefaultAllowTiltChange: (allow: boolean) => void;
+  onDefaultMaxTiltAngleChange: (angle: number | null) => void;
   onPack: () => void;
 }
 
@@ -55,6 +87,10 @@ export function ImportPanel({
   clearanceMm,
   weightBalanceMode,
   loadingAnchor,
+  defaultStackable,
+  orientationPolicy,
+  defaultAllowTilt,
+  defaultMaxTiltAngle,
   loading,
   error,
   onFileSelected,
@@ -65,6 +101,10 @@ export function ImportPanel({
   onClearanceChange,
   onWeightBalanceModeChange,
   onLoadingAnchorChange,
+  onDefaultStackableChange,
+  onOrientationPolicyChange,
+  onDefaultAllowTiltChange,
+  onDefaultMaxTiltAngleChange,
   onPack,
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -76,13 +116,14 @@ export function ImportPanel({
   }
 
   const totalQty = items.reduce((sum, i) => sum + i.quantity, 0);
+  const unitsNoun = items[0]?.item_type === "pallet" ? itemTypeNoun("pallet", true).toLowerCase() : "piezas";
 
   return (
     <div className="panel">
       <h2>1. Importar Excel</h2>
       {importedViaWizard ? (
         <p className="hint">
-          {items.length} lineas importadas — {totalQty} piezas totales
+          {items.length} lineas importadas — {totalQty} {unitsNoun} totales
           <br />
           Imported via the New Load Plan Wizard.
         </p>
@@ -100,7 +141,7 @@ export function ImportPanel({
           />
           {items.length > 0 && (
             <p className="hint">
-              {items.length} lineas importadas — {totalQty} piezas totales
+              {items.length} lineas importadas — {totalQty} {unitsNoun} totales
             </p>
           )}
         </>
@@ -109,8 +150,8 @@ export function ImportPanel({
       <h2>2. Load Space</h2>
       {customLoadSpace ? (
         <p className="hint">
-          {customLoadSpace.name} ({customLoadSpace.load_space_type}) — {customLoadSpace.length} × {customLoadSpace.width} ×{" "}
-          {customLoadSpace.height} mm, max {customLoadSpace.max_weight} kg
+          {customLoadSpace.name} <span className="badge-custom">Custom</span> ({customLoadSpace.load_space_type}) —{" "}
+          {customLoadSpace.length} × {customLoadSpace.width} × {customLoadSpace.height} mm, max {customLoadSpace.max_weight} kg
           <br />
           Defined in the New Load Plan Wizard.
         </p>
@@ -157,6 +198,51 @@ export function ImportPanel({
       </button>
       {advancedOpen && (
         <div className="advanced-box">
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={defaultStackable}
+              onChange={(e) => onDefaultStackableChange(e.target.checked)}
+            />
+            Default Stackable
+          </label>
+          <label className="inline-field">
+            Default Orientation
+            <select value={orientationPolicy} onChange={(e) => onOrientationPolicyChange(e.target.value as OrientationPolicy)}>
+              {ORIENTATION_DEFAULT_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          {items[0]?.item_type === "panel" && (
+            <>
+              <label className="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={defaultAllowTilt}
+                  onChange={(e) => onDefaultAllowTiltChange(e.target.checked)}
+                />
+                Allow Tilt
+              </label>
+              {defaultAllowTilt && (
+                <label className="inline-field">
+                  Maximum Tilt Angle (°)
+                  <input
+                    type="number"
+                    min={0}
+                    max={TILT_MAX_ANGLE_DEG}
+                    value={defaultMaxTiltAngle || ""}
+                    onChange={(e) => {
+                      const raw = Number(e.target.value);
+                      onDefaultMaxTiltAngleChange(Number.isFinite(raw) ? Math.min(TILT_MAX_ANGLE_DEG, Math.max(0, raw)) : null);
+                    }}
+                  />
+                </label>
+              )}
+            </>
+          )}
           <label className="checkbox-row">
             <input
               type="checkbox"

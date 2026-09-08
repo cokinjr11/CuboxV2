@@ -18,11 +18,13 @@ import {
   removePiece,
   rotatePiece,
   turnPiece,
+  setTilt,
   undo,
   unlockPiece,
   type PackLoadSpace,
 } from "./api/client";
 import { downloadBlob } from "./utils/download";
+import { extractErrorMessage } from "./utils/errors";
 import { AlternativesPanel } from "./components/AlternativesPanel";
 import { ColorByControl } from "./components/ColorByControl";
 import { ColorLegend } from "./components/ColorLegend";
@@ -42,6 +44,7 @@ import type {
   InitialWorkspaceConfig,
   LoadingAnchor,
   OptimizationMode,
+  OrientationPolicy,
   PackingResult,
   UnloadedItem,
   WeightBalanceMode,
@@ -87,6 +90,13 @@ function App({ initialWorkspace, onExitToHome }: AppProps = {}) {
 
   const [containers, setContainers] = useState<ContainerSpec[]>([]);
   const [items, setItems] = useState<WindowItem[]>(initialWorkspace?.items ?? []);
+  // Fase 6.1: el ItemType activo del plan es siempre homogeneo dentro de un
+  // mismo workspace (un plan solo importa UN perfil -BOX/PALLET/PANEL/
+  // CUSTOM-, ver PLANNING_MODE_ITEM_TYPE), asi que alcanza con mirar el
+  // primer item importado para adaptar terminologia/metricas (ImportPanel,
+  // MetricsPanel, UnloadedPanel) sin agregar un nuevo campo de estado ni
+  // tocar el wizard.
+  const activeItemType = items[0]?.item_type;
   const [selectedContainerId, setSelectedContainerId] = useState("");
   // Truck/Trailer/Custom Container definido a mano en el wizard (Fase 5):
   // cuando esta presente, tiene PRIORIDAD sobre selectedContainerId al
@@ -99,6 +109,19 @@ function App({ initialWorkspace, onExitToHome }: AppProps = {}) {
   const [clearanceMm, setClearanceMm] = useState(initialWorkspace?.handlingRules.clearanceMm ?? 0);
   const [weightBalanceMode, setWeightBalanceMode] = useState<WeightBalanceMode>(initialWorkspace?.handlingRules.weightBalanceMode ?? "normal");
   const [loadingAnchor, setLoadingAnchor] = useState<LoadingAnchor>(initialWorkspace?.handlingRules.loadingAnchor ?? "back_right");
+  // Fase 5B: defaults del PLAN para Handling Rules -antes solo se usaban una
+  // vez al importar y se descartaban; ahora viven en el workspace y se
+  // reenvian en CADA pack/optimize-remaining (ver runOptimize) para que
+  // items "inherit" (sin override propio) reflejen el default ACTUAL, no el
+  // que habia al momento del import.
+  const [defaultStackable, setDefaultStackable] = useState(initialWorkspace?.handlingRules.defaultStackable ?? false);
+  const [orientationPolicy, setOrientationPolicy] = useState<OrientationPolicy>(
+    initialWorkspace?.handlingRules.orientationPolicy ?? "free"
+  );
+  // Fase 5C: mismo criterio que defaultStackable/orientationPolicy -viven en
+  // el workspace y se reenvian en cada pack/optimize-remaining.
+  const [defaultAllowTilt, setDefaultAllowTilt] = useState(initialWorkspace?.handlingRules.defaultAllowTilt ?? false);
+  const [defaultMaxTiltAngle, setDefaultMaxTiltAngle] = useState(initialWorkspace?.handlingRules.defaultMaxTiltAngle ?? null);
   const [colorBy, setColorBy] = useState<ColorByMode>("default");
 
   const [result, setResult] = useState<PackingResult | null>(null);
@@ -152,7 +175,7 @@ function App({ initialWorkspace, onExitToHome }: AppProps = {}) {
       const parsed = await importExcel(file);
       setItems(parsed);
     } catch (e: any) {
-      setError(e?.response?.data?.detail || "Error al importar el Excel");
+      setError(extractErrorMessage(e, "Error al importar el Excel"));
     }
   }
 
@@ -172,8 +195,14 @@ function App({ initialWorkspace, onExitToHome }: AppProps = {}) {
       // Remaining (mantiene las Locked fijas y reoptimiza el resto).
       const hasLocked = result?.placed.some((p) => p.locked) ?? false;
       const loadSpace: PackLoadSpace = customLoadSpace ? { customLoadSpace } : { containerId: selectedContainerId };
+      const planHandlingRules = {
+        default_stackable: defaultStackable,
+        default_orientation_policy: orientationPolicy,
+        default_allow_tilt: defaultAllowTilt,
+        default_max_tilt_angle: defaultMaxTiltAngle,
+      };
       const response = hasLocked
-        ? await optimizeRemaining({ optimizationMode, weightBalanceMode, loadingAnchor })
+        ? await optimizeRemaining({ optimizationMode, weightBalanceMode, loadingAnchor, planHandlingRules })
         : await packContainer(items, loadSpace, {
             optimizationMode,
             enableCentralAisle,
@@ -181,6 +210,7 @@ function App({ initialWorkspace, onExitToHome }: AppProps = {}) {
             clearanceMm,
             weightBalanceMode,
             loadingAnchor,
+            planHandlingRules,
           });
       setResult(response.best);
       setAlternatives(response.alternatives);
@@ -189,7 +219,7 @@ function App({ initialWorkspace, onExitToHome }: AppProps = {}) {
       // los sistemas de inmediato (el usuario puede cambiarlo despues).
       setColorBy("system");
     } catch (e: any) {
-      setError(e?.response?.data?.detail || "Error al calcular el cubicaje");
+      setError(extractErrorMessage(e, "Error al calcular el cubicaje"));
     } finally {
       setLoading(false);
     }
@@ -211,12 +241,18 @@ function App({ initialWorkspace, onExitToHome }: AppProps = {}) {
     setLoading(true);
     setError("");
     try {
-      const response = await optimizeRemaining({ optimizationMode, weightBalanceMode, loadingAnchor });
+      const planHandlingRules = {
+        default_stackable: defaultStackable,
+        default_orientation_policy: orientationPolicy,
+        default_allow_tilt: defaultAllowTilt,
+        default_max_tilt_angle: defaultMaxTiltAngle,
+      };
+      const response = await optimizeRemaining({ optimizationMode, weightBalanceMode, loadingAnchor, planHandlingRules });
       setResult(response.best);
       setAlternatives(response.alternatives);
       setHasManualEdits(false);
     } catch (e: any) {
-      setError(e?.response?.data?.detail || "Error al reoptimizar las piezas restantes");
+      setError(extractErrorMessage(e, "Error al reoptimizar las piezas restantes"));
     } finally {
       setLoading(false);
     }
@@ -231,7 +267,7 @@ function App({ initialWorkspace, onExitToHome }: AppProps = {}) {
       setResult(updated);
       setAlternatives([]);
     } catch (e: any) {
-      setError(e?.response?.data?.detail || "No se pudo cambiar el estado de bloqueo");
+      setError(extractErrorMessage(e, "No se pudo cambiar el estado de bloqueo"));
     }
   }
 
@@ -247,7 +283,7 @@ function App({ initialWorkspace, onExitToHome }: AppProps = {}) {
       const blob = await exportExcel();
       downloadBlob(blob, "cubox-cubicaje.xlsx");
     } catch (e: any) {
-      setError(e?.response?.data?.detail || "Error al exportar a Excel");
+      setError(extractErrorMessage(e, "Error al exportar a Excel"));
     }
   }
 
@@ -307,7 +343,7 @@ function App({ initialWorkspace, onExitToHome }: AppProps = {}) {
       });
       downloadBlob(blob, direction === "load" ? "cubox-loading-guide.pdf" : "cubox-unloading-guide.pdf");
     } catch (e: any) {
-      setError(e?.response?.data?.detail || "Error al generar el reporte");
+      setError(extractErrorMessage(e, "Error al generar el reporte"));
     } finally {
       setGuideSteps(undefined);
       setGuideStepIndex(null);
@@ -355,7 +391,7 @@ function App({ initialWorkspace, onExitToHome }: AppProps = {}) {
       setAlternatives([]);
       return { ok: true, reason: "" };
     } catch (e: any) {
-      return { ok: false, reason: e?.response?.data?.detail || "No se pudo rotar la pieza" };
+      return { ok: false, reason: extractErrorMessage(e, "No se pudo rotar la pieza") };
     }
   }
 
@@ -368,7 +404,20 @@ function App({ initialWorkspace, onExitToHome }: AppProps = {}) {
       setAlternatives([]);
       return { ok: true, reason: "" };
     } catch (e: any) {
-      return { ok: false, reason: e?.response?.data?.detail || "No se pudo girar la pieza" };
+      return { ok: false, reason: extractErrorMessage(e, "No se pudo girar la pieza") };
+    }
+  }
+
+  async function handleSetTilt(angle: number): Promise<{ ok: boolean; reason: string }> {
+    if (!selectedPieceId) return { ok: false, reason: "" };
+    try {
+      const updated = await setTilt(selectedPieceId, angle);
+      setResult(updated);
+      setHasManualEdits(true);
+      setAlternatives([]);
+      return { ok: true, reason: "" };
+    } catch (e: any) {
+      return { ok: false, reason: extractErrorMessage(e, "No se pudo cambiar el Tilt") };
     }
   }
 
@@ -474,6 +523,10 @@ function App({ initialWorkspace, onExitToHome }: AppProps = {}) {
           clearanceMm={clearanceMm}
           weightBalanceMode={weightBalanceMode}
           loadingAnchor={loadingAnchor}
+          defaultStackable={defaultStackable}
+          orientationPolicy={orientationPolicy}
+          defaultAllowTilt={defaultAllowTilt}
+          defaultMaxTiltAngle={defaultMaxTiltAngle}
           loading={loading}
           error={error}
           onFileSelected={handleFileSelected}
@@ -484,6 +537,10 @@ function App({ initialWorkspace, onExitToHome }: AppProps = {}) {
           onClearanceChange={setClearanceMm}
           onWeightBalanceModeChange={setWeightBalanceMode}
           onLoadingAnchorChange={setLoadingAnchor}
+          onDefaultStackableChange={setDefaultStackable}
+          onOrientationPolicyChange={setOrientationPolicy}
+          onDefaultAllowTiltChange={setDefaultAllowTilt}
+          onDefaultMaxTiltAngleChange={setDefaultMaxTiltAngle}
           onPack={handlePack}
         />
         {result && (
@@ -524,7 +581,7 @@ function App({ initialWorkspace, onExitToHome }: AppProps = {}) {
               Show Center of Mass
             </label>
             <ColorLegend placed={result.placed} colorBy={colorBy} />
-            <MetricsPanel metrics={result.metrics} />
+            <MetricsPanel metrics={result.metrics} activeItemType={activeItemType} />
           </>
         )}
       </aside>
@@ -555,6 +612,7 @@ function App({ initialWorkspace, onExitToHome }: AppProps = {}) {
             piece={selectedPiece}
             onRotate={handleRotate}
             onTurn={handleTurn}
+            onSetTilt={handleSetTilt}
             onRemove={handleRemove}
             onToggleLock={handleToggleLock}
           />
@@ -577,6 +635,7 @@ function App({ initialWorkspace, onExitToHome }: AppProps = {}) {
           <UnloadedPanel
             items={result.unloaded}
             insertingItemId={insertingItem?.id ?? null}
+            activeItemType={activeItemType}
             onStartPlacing={handleStartPlacing}
             onCancelPlacing={() => setInsertingItem(null)}
           />

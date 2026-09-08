@@ -29,10 +29,18 @@ _HEADERS_BY_PROFILE: dict[ItemType, list[str]] = {
     ItemType.PALLET: [
         # Orientation es OPCIONAL (Fase 6): si se omite, se usa el Floor
         # Rotation del plan (wizard) o UPRIGHT de sistema -ver import_items.py.
+        # Boxes Inside (Fase 6.2) es puramente informativo -trazabilidad/
+        # inventario, nunca afecta packing- por eso solo se expone en PALLET,
+        # que es el perfil donde "cuantas cajas trae este pallet" tiene sentido.
         "Code", "Quantity", "Length", "Width", "Height", "Weight",
-        "Description", "Orientation", "Stackable", "Max Stack Weight", "Group", "Priority", "Delivery Sequence",
+        "Description", "Orientation", "Stackable", "Max Stack Weight", "Boxes Inside", "Group", "Priority", "Delivery Sequence",
     ],
     ItemType.PANEL: [
+        # Fase 5C-FINAL: Tilt/Inclination es PLAN-LEVEL ONLY (Wizard ->
+        # Handling Rules) -NO tiene columnas de Excel (ni Allow Tilt ni Max
+        # Tilt Angle). Un archivo mas viejo que si las traiga sigue
+        # importando bien (ver import_items.py: esas columnas simplemente
+        # se ignoran).
         "Code", "Quantity", "Width", "Height", "Thickness", "Weight",
         "Description", "System", "Group", "Stackable", "Max Stack Weight", "Priority", "Delivery Sequence",
     ],
@@ -60,6 +68,9 @@ _COLUMN_NOTES: dict[str, str] = {
     "System": "Sistema/linea de producto (uso tipico en ventanas). Opcional.",
     "Priority": "Prioridad de carga (numero entero). Vacio = 0 (prioridad media).",
     "Delivery Sequence": "Orden de entrega/parada. Opcional, numerico.",
+    "Boxes Inside": "Cuantas cajas/unidades individuales contiene este pallet ya armado. Solo informativo: no "
+    "afecta el empaquetado ni la orientacion, es para trazabilidad, logistica e inventario (aparece en los "
+    "reportes y en la Loading/Unloading Guide). Vacio = no se muestra ese dato.",
 }
 
 _EXAMPLE_VALUES: dict[str, object] = {
@@ -73,6 +84,7 @@ _EXAMPLE_VALUES: dict[str, object] = {
     "Description": "Example row - delete before importing",
     "Orientation": "FREE",
     "Stackable": "No",
+    "Boxes Inside": 40,
 }
 
 # Fase 6: PALLET solo admite UPRIGHT/FIXED (nunca FREE) -la nota generica y

@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from app.core.pdf_export import (
     CONTAINER_REPORT_COLUMNS,
     _batch_steps_for_pages,
+    _is_palletized_plan,
     build_container_report_pdf,
     build_container_report_table_rows,
     build_guide_step_rows,
@@ -13,7 +14,7 @@ from app.core.pdf_export import (
     build_unloading_guide_pdf,
 )
 from app.main import app
-from app.models.schemas import ContainerReportRequest, PlacedPiece, SortReportBy
+from app.models.schemas import ContainerReportRequest, ItemType, PlacedPiece, SortReportBy
 
 client = TestClient(app)
 
@@ -56,7 +57,22 @@ def test_container_report_columns_are_exact():
         "Height",
         "Thickness",
         "Weight",
+        "Boxes Inside",
     ]
+
+
+def test_is_palletized_plan_true_only_for_pallet_item_type():
+    pallet_piece = PlacedPiece(
+        id="p1", code="P1", weight=780, stackable=True, priority=1, x=0, y=0, z=0, dx=1, dy=1, dz=1,
+        orientation_label="P1-a", source_width=1, source_height=1, source_thickness=1, item_type=ItemType.PALLET,
+    )
+    box_piece = PlacedPiece(
+        id="b1", code="B1", weight=10, stackable=True, priority=1, x=0, y=0, z=0, dx=1, dy=1, dz=1,
+        orientation_label="P1-a", source_width=1, source_height=1, source_thickness=1, item_type=ItemType.BOX,
+    )
+    assert _is_palletized_plan([pallet_piece]) is True
+    assert _is_palletized_plan([box_piece]) is False
+    assert _is_palletized_plan([]) is False
 
 
 def test_container_report_table_rows_consolidate_identical_pieces():
@@ -67,12 +83,13 @@ def test_container_report_table_rows_consolidate_identical_pieces():
 
     rows = build_container_report_table_rows(state, SortReportBy.GROUP)
     assert len(rows) == 1, "6 piezas identicas deben consolidarse en 1 sola fila"
-    code, description, quantity, system, group, width, height, thickness, weight = rows[0]
+    code, description, quantity, system, group, width, height, thickness, weight, boxes_inside = rows[0]
     assert code == "W1"
     assert quantity == 6
     assert system == "SysA"
     assert group == "G1"
     assert (width, height, thickness, weight) == (1200, 2000, 100, 45)
+    assert boxes_inside == ""  # ventana legacy, sin Boxes Inside definido
 
 
 def test_container_report_table_rows_sortable_by_group_or_system():
@@ -150,9 +167,10 @@ def test_build_guide_step_rows_consolidates_by_code_and_description():
 
     rows = build_guide_step_rows(pieces_by_id, step_ids)
     assert len(rows) == 1, "las 4 piezas son identicas (mismo code/description) -> 1 sola fila"
-    code, description, quantity = rows[0]
+    code, description, quantity, boxes_inside = rows[0]
     assert code == "W1"
     assert quantity == 4
+    assert boxes_inside == ""  # ventana legacy, sin Boxes Inside definido
 
 
 def _placed(piece_id, code):

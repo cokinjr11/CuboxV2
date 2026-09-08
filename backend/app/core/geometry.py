@@ -10,6 +10,8 @@ reglas.
 
 from dataclasses import dataclass
 
+from app.models.schemas import ItemType
+
 TOL = 1e-6
 
 MIN_SUPPORT_PCT = 0.8
@@ -30,6 +32,30 @@ class Box:
     dz: float
     stackable: bool = True
     max_stack_weight: float | None = None
+    tilt_angle: float = 0.0
+    """Fase 5C-FINAL: SIGNED, 0 = sin inclinar. dx/dy/dz de una pieza
+    inclinada son su envolvente AABB (ver core/orientation.py:apply_tilt)
+    -boundaries/broad-phase siguen funcionando sin cambios sobre estos
+    campos. check_support la usa para excluir una pieza inclinada como
+    soporte valido de otra (su cara superior de la envolvente no es una
+    superficie fisica real). La colision PRECISA (narrow phase, ver
+    core/tilt_collision.py) usa ademas tilt_axis/base_dx/dy/dz de abajo
+    -no solo este angulo."""
+    tilt_axis: str | None = None
+    """Fase 5C-FINAL: 'x'/'y' -eje horizontal de Thickness sobre el que se
+    inclina esta pieza (ver core/orientation.py:apply_tilt). None = sin
+    Tilt aplicable."""
+    base_dx: float | None = None
+    base_dy: float | None = None
+    base_dz: float | None = None
+    """Fase 5C-FINAL: dimensiones FISICAS reales (sin inflar por Tilt) -
+    usadas por la colision precisa OBB/SAT (core/tilt_collision.py). None
+    cuando tilt_axis es None (la OBB cae de vuelta a dx/dy/dz, identico a
+    una caja axis-aligned normal)."""
+    item_type: ItemType | None = None
+    """Fase 5C-FINAL: tipo de item de origen. No lo usa ningun chequeo de
+    geometry.py/tilt_collision.py directamente -se mantiene como metadata
+    disponible para quien construya esta Box."""
 
     @property
     def top_z(self) -> float:
@@ -149,6 +175,10 @@ def check_support(box: Box, others: list[Box], tol: float = TOL, min_support_pct
     non_stackable = [o for o in touching if not o.stackable]
     if non_stackable:
         return False, f"No se puede apilar sobre la pieza no apilable {non_stackable[0].id}"
+
+    tilted = [o for o in touching if o.tilt_angle != 0]
+    if tilted:
+        return False, f"No se puede apilar sobre la pieza inclinada {tilted[0].id}"
 
     supported_area = sum(_xy_overlap_area(box, o) for o in touching)
     support_pct = supported_area / box.base_area if box.base_area > tol else 0.0

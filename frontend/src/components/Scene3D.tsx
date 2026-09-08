@@ -4,7 +4,7 @@ import { Canvas, useThree } from "@react-three/fiber";
 import { Billboard, Edges, Grid, OrbitControls, Text } from "@react-three/drei";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { PieceMesh, type PieceVisualState } from "./PieceMesh";
-import { DragBox } from "./DragBox";
+import { LoadUnitBody } from "./LoadUnitBody";
 import { useDragEngine } from "../hooks/useDragEngine";
 import { findRestingZ } from "../geometry/geometry";
 import { SCENE_SCALE } from "../config";
@@ -450,7 +450,8 @@ function SceneContents({
         );
       })}
       {insertingItem && insertDims && ghostPos && (
-        <DragBox
+        <LoadUnitBody
+          itemType={insertingItem.item_type}
           x={ghostPos.x}
           y={ghostPos.y}
           z={ghostPos.z}

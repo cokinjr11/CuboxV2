@@ -34,6 +34,7 @@ igual (ver core/packer.py, core/manual_move.py, core/final_validation.py).
 """
 
 import itertools
+import math
 from dataclasses import dataclass
 
 from app.models.schemas import PANEL_DIMENSION_MAPPING, Dimensions3D, OrientationPolicy, PanelDimensionMapping
@@ -49,29 +50,132 @@ class Orientation:
     dy: dimension de la pieza a lo largo del eje Y (width/depth) del contenedor
     dz: dimension de la pieza a lo largo del eje Z (height, vertical)
     label: identificador legible de la orientacion
+
+    Fase 5C (Tilt/Inclination): dx/dy/dz de una orientacion inclinada ya son
+    la ENVOLVENTE AABB de la pieza inclinada (ver apply_tilt) -no la pieza
+    "acostada visualmente pero con caja de colision vertical". Por eso
+    collision/boundaries/support/stacking (geometry.py) no necesitan saber
+    que existe Tilt: siguen comparando dx/dy/dz como siempre.
+
+    tilt_angle/tilt_axis/base_* solo tienen valor para trazabilidad
+    (PlacedPiece) y para poder recalcular la geometria si el angulo cambia
+    manualmente despues -no participan en ninguna comparacion geometrica.
     """
 
     dx: float
     dy: float
     dz: float
     label: str
+    tilt_angle: float = 0.0
+    tilt_axis: str | None = None
+    base_dx: float | None = None
+    base_dy: float | None = None
+    base_dz: float | None = None
+
+
+def apply_tilt(
+    base_dx: float, base_dy: float, base_dz: float, tilt_axis: str | None, tilt_angle_deg: float
+) -> tuple[float, float, float]:
+    """Envolvente AABB (dx, dy, dz) de un prisma rectangular que se inclina
+    `tilt_angle_deg` grados alrededor de su arista de apoyo (la base se
+    queda quieta; el resto se inclina hacia `tilt_axis`). Formula estandar
+    de bounding box de un rectangulo rotado, aplicada solo al eje vertical
+    (base_dz) y al eje horizontal de Thickness (`tilt_axis`) -el otro eje
+    horizontal no cambia.
+
+        nuevo_dz              = base_dz*cos(theta) + T*sin(theta)
+        nuevo_eje_thickness    = base_dz*sin(theta) + T*cos(theta)
+
+    donde T es base_dx/base_dy segun `tilt_axis` y theta = abs(tilt_angle_deg)
+    en radianes. Fase 5C-FINAL: `tilt_angle_deg` es SIGNED (direccion de la
+    inclinacion), pero la ENVOLVENTE es simetrica por construccion -inclinar
+    +15 o -15 grados produce exactamente la misma caja AABB, solo cambia
+    hacia que lado se inclina la geometria fisica real (ver DragBox.tsx /
+    tilt_collision.py, que si usan el signo). Por eso esta funcion trabaja
+    siempre con la MAGNITUD (abs) para el calculo de dx/dy/dz -el signo se
+    preserva por separado en PlacedPiece.tilt_angle, nunca se intenta
+    recuperar desde la envolvente (geometricamente imposible: +/-15 son
+    indistinguibles en dx/dy/dz). `tilt_axis=None` o angulo ~0 -> misma caja
+    sin cambios. Unica fuente de verdad para esta transformacion: la usan
+    tanto la generacion de candidatos de tilt automatico (_tilt_variant, mas
+    abajo) como el endpoint manual /set-tilt (ver core/manual_move.py)."""
+    if tilt_axis is None or abs(tilt_angle_deg) <= TOL:
+        return base_dx, base_dy, base_dz
+    theta = math.radians(abs(tilt_angle_deg))
+    sin_t, cos_t = math.sin(theta), math.cos(theta)
+    if tilt_axis == "x":
+        t, h = base_dx, base_dz
+        return h * sin_t + t * cos_t, base_dy, h * cos_t + t * sin_t
+    t, h = base_dy, base_dz
+    return base_dx, h * sin_t + t * cos_t, h * cos_t + t * sin_t
+
+
+def _tilt_variant(base: "Orientation", tilt_angle_deg: float) -> "Orientation":
+    dx, dy, dz = apply_tilt(base.dx, base.dy, base.dz, base.tilt_axis, tilt_angle_deg)
+    return Orientation(
+        dx=dx,
+        dy=dy,
+        dz=dz,
+        label=f"{base.label} + Tilt {tilt_angle_deg:g}°",
+        tilt_angle=tilt_angle_deg,
+        tilt_axis=base.tilt_axis,
+        base_dx=base.dx,
+        base_dy=base.dy,
+        base_dz=base.dz,
+    )
+
+
+_TILT_CANDIDATE_FRACTIONS: tuple[float, ...] = (0.25, 0.5, 0.75, 1.0)
+"""Fase 5C-FINAL, seccion 10 del pedido: barrido ACOTADO y DETERMINISTICO de
+magnitudes de Tilt (25/50/75/100% del maximo efectivo) -nunca un barrido
+continuo (no 0.1 en 0.1). 0 grados ya esta cubierto por las orientaciones
+`base` (y el packer SIEMPRE las prueba primero, ver packer.py -seccion 8:
+"0 preferred"). Con 4 fracciones incluye deliberadamente un angulo
+INTERMEDIO (no solo 0 y el maximo, ver seccion 11 del pedido: un caso real
+puede necesitar exactamente, por ejemplo, el 50% del maximo para caber)."""
 
 
 def _panel_edge_only_orientations(
-    dims: Dimensions3D, mapping: PanelDimensionMapping = PANEL_DIMENSION_MAPPING
+    dims: Dimensions3D,
+    mapping: PanelDimensionMapping = PANEL_DIMENSION_MAPPING,
+    allow_tilt: bool = False,
+    max_tilt_angle: float = 0.0,
 ) -> list[Orientation]:
     """Las 4 orientaciones fisicamente validas de un panel/ventana (ver
     regla critica del negocio arriba). face_axes/thickness_axis vienen de
-    `mapping` -nunca se infieren por heuristica geometrica."""
+    `mapping` -nunca se infieren por heuristica geometrica.
+
+    Fase 5C: cada orientacion se etiqueta con `tilt_axis` ('x' si Thickness
+    quedo en dx, 'y' si quedo en dy) -necesario incluso a 0 grados, para que
+    PlacedPiece sepa sobre que eje se podria inclinar despues. Si
+    `allow_tilt` y `max_tilt_angle` > 0 (Fase 5C-FINAL, seccion 9/10 del
+    pedido), se agregan ademas variantes inclinadas de cada orientacion base
+    en AMBOS signos (+/-) a un set acotado de magnitudes -ver
+    _TILT_CANDIDATE_FRACTIONS. `apply_tilt` ya trabaja con abs(angulo) para
+    el tamano de la envolvente (simetrica), asi que +M y -M dan la MISMA
+    caja pero se generan como candidatos SEPARADOS -solo el signo
+    almacenado en Orientation.tilt_angle distingue cual es cual, para que
+    packer.py pueda registrar el signo correcto en PlacedPiece."""
     face_a = getattr(dims, mapping.face_axes[0])
     face_b = getattr(dims, mapping.face_axes[1])
     t = getattr(dims, mapping.thickness_axis)
-    return [
-        Orientation(dx=face_a, dy=t, dz=face_b, label="P1-a (cara-a x T, vertical cara-b)"),
-        Orientation(dx=t, dy=face_a, dz=face_b, label="P1-b (T x cara-a, vertical cara-b)"),
-        Orientation(dx=face_b, dy=t, dz=face_a, label="P2-a (cara-b x T, vertical cara-a)"),
-        Orientation(dx=t, dy=face_b, dz=face_a, label="P2-b (T x cara-b, vertical cara-a)"),
+    base = [
+        Orientation(dx=face_a, dy=t, dz=face_b, label="P1-a (cara-a x T, vertical cara-b)", tilt_axis="y"),
+        Orientation(dx=t, dy=face_a, dz=face_b, label="P1-b (T x cara-a, vertical cara-b)", tilt_axis="x"),
+        Orientation(dx=face_b, dy=t, dz=face_a, label="P2-a (cara-b x T, vertical cara-a)", tilt_axis="y"),
+        Orientation(dx=t, dy=face_b, dz=face_a, label="P2-b (T x cara-b, vertical cara-a)", tilt_axis="x"),
     ]
+    if not allow_tilt or max_tilt_angle <= TOL:
+        return base
+    tilted: list[Orientation] = []
+    for o in base:
+        for fraction in _TILT_CANDIDATE_FRACTIONS:
+            magnitude = max_tilt_angle * fraction
+            if magnitude <= TOL:
+                continue
+            tilted.append(_tilt_variant(o, magnitude))
+            tilted.append(_tilt_variant(o, -magnitude))
+    return base + tilted
 
 
 def _free_orientations(dims: Dimensions3D) -> list[Orientation]:
@@ -101,10 +205,17 @@ def _fixed_orientation(dims: Dimensions3D) -> list[Orientation]:
 def get_valid_orientations(
     dims: Dimensions3D,
     policy: OrientationPolicy = OrientationPolicy.PANEL_EDGE_ONLY,
+    allow_tilt: bool = False,
+    max_tilt_angle: float = 0.0,
 ) -> list[Orientation]:
-    """Devuelve las orientaciones fisicamente validas de un item bajo `policy`."""
+    """Devuelve las orientaciones fisicamente validas de un item bajo `policy`.
+
+    `allow_tilt`/`max_tilt_angle` (Fase 5C) solo tienen efecto bajo
+    PANEL_EDGE_ONLY -por defecto (False/0) el resultado es identico al de
+    antes de Fase 5C para cualquier caller que no los pase (compatibilidad
+    hacia atras, seccion 7 del pedido)."""
     if policy == OrientationPolicy.PANEL_EDGE_ONLY:
-        return _panel_edge_only_orientations(dims)
+        return _panel_edge_only_orientations(dims, allow_tilt=allow_tilt, max_tilt_angle=max_tilt_angle)
     if policy == OrientationPolicy.FREE:
         return _free_orientations(dims)
     if policy == OrientationPolicy.UPRIGHT:
@@ -114,6 +225,46 @@ def get_valid_orientations(
     raise ValueError(f"Politica de orientacion desconocida: {policy}")
 
 
+def _solve_tilt_angle(base: "Orientation", dx: float, dy: float, dz: float, tol: float) -> float | None:
+    """Si (dx, dy, dz) es la envolvente de `base` inclinada ALGUN angulo en
+    [0, 90] grados, devuelve ese angulo (grados); None si no hay ninguna
+    inclinacion fisicamente coherente que explique esta terna.
+
+    Resuelve el sistema lineal inverso de apply_tilt:
+
+        dz              = h*cos(theta) + t*sin(theta)
+        eje_thickness   = h*sin(theta) + t*cos(theta)
+
+    (h, t conocidos: base.dz y base.dx/dy segun tilt_axis) para (cos, sin),
+    valida que cos^2+sin^2 ~= 1 (una terna arbitraria no corresponde a
+    NINGUN angulo real) y que el otro eje horizontal no cambio. Se usa desde
+    is_valid_orientation para soportar Tilt MANUAL continuo (cualquier
+    angulo entre 0 y el maximo efectivo, no solo los 2 candidatos discretos
+    que prueba el packer automatico -ver get_valid_orientations)."""
+    if base.tilt_axis is None:
+        return None
+    if base.tilt_axis == "x":
+        other_dim, other_base = dy, base.dy
+        thickness_dim, t = dx, base.dx
+    else:
+        other_dim, other_base = dx, base.dx
+        thickness_dim, t = dy, base.dy
+    if abs(other_dim - other_base) > tol:
+        return None
+    h = base.dz
+    det = h * h - t * t
+    if abs(det) < 1e-9:
+        return None
+    cos_t = (h * dz - t * thickness_dim) / det
+    sin_t = (h * thickness_dim - t * dz) / det
+    if abs(cos_t * cos_t + sin_t * sin_t - 1.0) > 1e-4:
+        return None
+    angle = math.degrees(math.atan2(sin_t, cos_t))
+    if angle < -1e-4 or angle > 90 + 1e-4:
+        return None
+    return max(0.0, angle)
+
+
 def is_valid_orientation(
     dims: Dimensions3D,
     dx: float,
@@ -121,14 +272,32 @@ def is_valid_orientation(
     dz: float,
     policy: OrientationPolicy = OrientationPolicy.PANEL_EDGE_ONLY,
     tol: float = TOL,
+    allow_tilt: bool = False,
+    max_tilt_angle: float = 0.0,
 ) -> bool:
     """Verifica si una terna (dx, dy, dz) corresponde a una orientacion valida
     bajo `policy`. Esta funcion es la unica fuente de verdad para validar
     orientaciones y debe usarse tanto en el algoritmo automatico como en el
-    movimiento manual y la validacion final."""
+    movimiento manual y la validacion final.
+
+    Fase 5C: con `allow_tilt`/`max_tilt_angle` (los valores YA resueltos de
+    la pieza), ademas de las orientaciones base tambien se acepta CUALQUIER
+    inclinacion continua entre 0 y el maximo efectivo (ver _solve_tilt_angle)
+    -no solo los 2 candidatos discretos que prueba el packer automatico
+    (get_valid_orientations con allow_tilt=True): el Tilt MANUAL (seccion 28
+    del pedido) permite cualquier angulo intermedio, y tanto la validacion
+    manual como la final deben poder confirmarlo. Sin `allow_tilt` (default),
+    una pieza inclinada nunca coincide -por eso Rotate/Turn (que llaman esta
+    funcion indirectamente via toggle_orientation/turn_orientation sin pasar
+    tilt) se rechazan limpiamente sobre una pieza inclinada en vez de
+    reinterpretar mal su eje de Tilt (ver seccion 36 del pedido)."""
     for o in get_valid_orientations(dims, policy):
         if abs(o.dx - dx) < tol and abs(o.dy - dy) < tol and abs(o.dz - dz) < tol:
             return True
+        if allow_tilt and max_tilt_angle > TOL and policy == OrientationPolicy.PANEL_EDGE_ONLY:
+            angle = _solve_tilt_angle(o, dx, dy, dz, tol)
+            if angle is not None and angle <= max_tilt_angle + 1e-4:
+                return True
     return False
 
 

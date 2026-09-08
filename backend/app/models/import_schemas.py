@@ -25,6 +25,8 @@ class ImportDefaults(BaseModel):
 
     orientation_policy: OrientationPolicy | None = None
     stackable: bool | None = None
+    # Fase 5C-FINAL: Tilt NO tiene equivalente aca -es PLAN-LEVEL ONLY, sin
+    # columna de Excel que pueda quedar en blanco (ver import_items.py).
 
 
 class ImportIssueSeverity(str, Enum):

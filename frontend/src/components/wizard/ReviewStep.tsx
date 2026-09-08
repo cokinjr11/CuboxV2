@@ -28,7 +28,6 @@ export function ReviewStep({ draft, catalog }: Props) {
     ? catalog.find((c) => c.id === draft.loadSpace!.containerId)
     : undefined;
   const custom = draft.loadSpace?.custom;
-  const isCustomSpace = Boolean(custom);
 
   return (
     <div className="wizard-step-body">
@@ -79,7 +78,9 @@ export function ReviewStep({ draft, catalog }: Props) {
           <>
             <div className="review-row">
               <span className="review-label">Name</span>
-              <span>{custom.name || "—"}</span>
+              <span>
+                {custom.name || "—"} <span className="badge-custom">Custom</span>
+              </span>
             </div>
             <div className="review-row">
               <span className="review-label">Type</span>
@@ -101,12 +102,6 @@ export function ReviewStep({ draft, catalog }: Props) {
           <div className="review-row">
             <span className="review-label">Load Space</span>
             <span>—</span>
-          </div>
-        )}
-        {isCustomSpace && (
-          <div className="wizard-note" style={{ marginTop: 10, marginBottom: 0 }}>
-            Optimizing directly into a custom Truck/Trailer/Custom Space from the workspace is coming in a future
-            update. For now the workspace will open with your imported items and you can select a container.
           </div>
         )}
       </div>
@@ -152,6 +147,16 @@ export function ReviewStep({ draft, catalog }: Props) {
               <span className="review-label">Weight Balance</span>
               <span>{WEIGHT_BALANCE_LABELS[draft.handlingRules.weightBalanceMode]}</span>
             </div>
+            {draft.planningMode === "panels_fragile" && (
+              <div className="review-row">
+                <span className="review-label">Tilt Enabled</span>
+                <span>
+                  {draft.handlingRules.defaultAllowTilt
+                    ? `Yes (max ${draft.handlingRules.defaultMaxTiltAngle}°)`
+                    : "No"}
+                </span>
+              </div>
+            )}
           </>
         )}
       </div>

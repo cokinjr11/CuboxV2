@@ -28,9 +28,10 @@ restriccion dura): se mezcla en el orden de varias estrategias.
 
 from dataclasses import dataclass
 
-from app.core.geometry import Box, check_stack_weight, check_support, has_clearance_conflict, has_collision, within_container
+from app.core.geometry import Box, check_stack_weight, check_support, has_clearance_conflict, within_container
 from app.core.orientation import get_valid_orientations
 from app.core.reasons import UnloadedReason
+from app.core.tilt_collision import has_precise_collision
 from app.core.road_weight import piece_center_x, would_exceed_support_limits
 from app.core.reserved_zones import ReservedZone, zone_conflict_with_clearance
 from app.core.strategies import build_sort_key
@@ -86,7 +87,12 @@ def _expand_instances(items: list[WindowItem], reserved_ids: set[str] | None = N
 
 
 def _fits_in_container_at_all(item: WindowItem, container: ContainerSpec) -> bool:
-    for o in get_valid_orientations(item.dimensions, item.resolved_orientation_policy):
+    for o in get_valid_orientations(
+        item.dimensions,
+        item.resolved_orientation_policy,
+        allow_tilt=item.allow_tilt,
+        max_tilt_angle=item.max_tilt_angle or 0.0,
+    ):
         if o.dx <= container.length + TOL and o.dy <= container.width + TOL and o.dz <= container.height + TOL:
             return True
     return False
@@ -186,10 +192,15 @@ def _unloaded_item(inst: _Instance, reason_code: UnloadedReason, reason_text: st
         priority=w.priority,
         max_stack_weight=w.max_stack_weight,
         delivery_sequence=w.delivery_sequence,
+        boxes_inside=w.boxes_inside,
         reason=reason_text,
         reason_code=reason_code.value,
         item_type=w.item_type,
         orientation_policy=w.orientation_policy,
+        stackable_override=w.stackable_override,
+        orientation_override=w.orientation_override,
+        allow_tilt=w.allow_tilt,
+        max_tilt_angle=w.max_tilt_angle,
     )
 
 
@@ -254,6 +265,12 @@ def pack_container(
             dz=p.dz,
             stackable=p.stackable,
             max_stack_weight=p.max_stack_weight,
+            tilt_angle=p.tilt_angle,
+            tilt_axis=p.tilt_axis,
+            base_dx=p.base_dx,
+            base_dy=p.base_dy,
+            base_dz=p.base_dz,
+            item_type=p.item_type,
         )
         placed_boxes.append(seed_box)
         placed_pieces.append(p)
@@ -267,7 +284,9 @@ def pack_container(
             _Candidate(seed_box.max_x + clearance, seed_box.y, seed_box.z, None),
             _Candidate(seed_box.x, seed_box.max_y + clearance, seed_box.z, None),
         ]
-        if p.stackable:
+        # Fase 5C: una pieza inclinada no puede servir de soporte -no se
+        # ofrece como semilla de apilamiento (seccion 24 del pedido).
+        if p.stackable and p.tilt_angle == 0:
             new_candidates.append(_Candidate(seed_box.x, seed_box.y, seed_box.top_z, seed_box.id))
         candidates.extend(new_candidates)
 
@@ -297,101 +316,139 @@ def pack_container(
         # de una sola fila a lo largo del contenedor.
         candidates.sort(key=lambda c: (c.x, c.z, c.y))
 
-        for cand in candidates:
+        # Fase 5C-FINAL, seccion 8 del pedido ("0 grados SIEMPRE preferido")
+        # + performance (seccion 53): se prueban TODAS las posiciones
+        # candidatas con las 4 orientaciones base (0 grados) primero, y solo
+        # si NINGUNA posicion funciona a 0 grados se hace una segunda pasada
+        # con las variantes inclinadas. Antes se probaban las 36
+        # orientaciones (4 base + 32 con Tilt) en CADA posicion candidata
+        # rechazada -carisimo, y ademas inutil: si el item termina en 0
+        # grados de todos modos, esas 32 pruebas extra por posicion nunca
+        # aportaron nada. Con este orden, un plan donde Tilt esta habilitado
+        # pero nunca hace falta corre a la misma velocidad que uno sin Tilt.
+        orientation_passes = [get_valid_orientations(w.dimensions, w.resolved_orientation_policy)]
+        if w.allow_tilt and (w.max_tilt_angle or 0.0) > TOL:
+            all_orientations = get_valid_orientations(
+                w.dimensions, w.resolved_orientation_policy, allow_tilt=True, max_tilt_angle=w.max_tilt_angle
+            )
+            orientation_passes.append(all_orientations[len(orientation_passes[0]) :])
+
+        for orientations in orientation_passes:
             if placed_ok:
                 break
-            for o in get_valid_orientations(w.dimensions, w.resolved_orientation_policy):
-                candidate_box = Box(
-                    id=inst.instance_id,
-                    x=cand.x,
-                    y=cand.y,
-                    z=cand.z,
-                    dx=o.dx,
-                    dy=o.dy,
-                    dz=o.dz,
-                    stackable=w.stackable,
-                    max_stack_weight=w.max_stack_weight,
-                )
-
-                if not within_container(candidate_box, container.length, container.width, container.height):
-                    continue
-                if has_collision(candidate_box, placed_boxes) is not None:
-                    continue
-                if zone_conflict_with_clearance(candidate_box, reserved_zones, clearance) is not None:
-                    continue
-                if has_clearance_conflict(candidate_box, placed_boxes, clearance) is not None:
-                    continue
-
-                if cand.z > TOL:
-                    support = next((b for b in placed_boxes if b.id == cand.support_id), None)
-                    if support is None or not support.stackable:
-                        continue
-                    ok, _ = check_support(candidate_box, placed_boxes)
-                    if not ok:
-                        continue
-                    ok, _ = check_stack_weight(candidate_box, w.weight, placed_boxes, weights_by_id)
-                    if not ok:
-                        continue
-
-                # Espejo de X: la busqueda interna siempre construye desde x=0
-                # hacia afuera; reflejarlo hace que lo primero colocado (el
-                # fondo del contenedor, x=0 en la busqueda interna) termine
-                # junto a la pared del fondo (x=length) y lo ultimo quede
-                # cerca de la puerta (x=0), que es como se carga en la
-                # realidad: del fondo hacia la puerta.
-                final_x = container.length - candidate_box.x - candidate_box.dx
-                candidate_center_x = piece_center_x(final_x, candidate_box.dx)
-                prospective_weight = total_weight + w.weight
-                prospective_moment = total_moment + w.weight * candidate_center_x
-                if would_exceed_support_limits(prospective_weight, prospective_moment, road_weight_config):
-                    continue
-
-                placed_boxes.append(candidate_box)
-                weights_by_id[candidate_box.id] = w.weight
-                placed_pieces.append(
-                    PlacedPiece(
+            for cand in candidates:
+                if placed_ok:
+                    break
+                for o in orientations:
+                    candidate_box = Box(
                         id=inst.instance_id,
-                        code=w.code,
-                        description=w.description,
-                        system=w.system,
-                        group=w.group,
-                        weight=w.weight,
+                        x=cand.x,
+                        y=cand.y,
+                        z=cand.z,
+                        dx=o.dx,
+                        dy=o.dy,
+                        dz=o.dz,
                         stackable=w.stackable,
-                        priority=w.priority,
                         max_stack_weight=w.max_stack_weight,
-                        delivery_sequence=w.delivery_sequence,
-                        x=final_x,
-                        y=candidate_box.y,
-                        z=candidate_box.z,
-                        dx=candidate_box.dx,
-                        dy=candidate_box.dy,
-                        dz=candidate_box.dz,
-                        orientation_label=o.label,
-                        source_width=w.width,
-                        source_height=w.height,
-                        source_thickness=w.thickness,
+                        tilt_angle=o.tilt_angle,
+                        tilt_axis=o.tilt_axis,
+                        base_dx=o.base_dx if o.base_dx is not None else o.dx,
+                        base_dy=o.base_dy if o.base_dy is not None else o.dy,
+                        base_dz=o.base_dz if o.base_dz is not None else o.dz,
                         item_type=w.item_type,
-                        orientation_policy=w.orientation_policy,
                     )
-                )
-                total_weight = prospective_weight
-                total_moment = prospective_moment
 
-                # Con clearance > 0, un candidato pegado (gap=0) a esta pieza
-                # siempre violaria la separacion minima; se adelanta el hueco
-                # requerido para que el candidato generado ya sea valido.
-                new_candidates = [
-                    _Candidate(candidate_box.max_x + clearance, candidate_box.y, candidate_box.z, None),
-                    _Candidate(candidate_box.x, candidate_box.max_y + clearance, candidate_box.z, None),
-                ]
-                if w.stackable:
-                    new_candidates.append(
-                        _Candidate(candidate_box.x, candidate_box.y, candidate_box.top_z, candidate_box.id)
+                    if not within_container(candidate_box, container.length, container.width, container.height):
+                        continue
+                    if has_precise_collision(candidate_box, placed_boxes) is not None:
+                        continue
+                    if zone_conflict_with_clearance(candidate_box, reserved_zones, clearance) is not None:
+                        continue
+                    if has_clearance_conflict(candidate_box, placed_boxes, clearance) is not None:
+                        continue
+
+                    if cand.z > TOL:
+                        support = next((b for b in placed_boxes if b.id == cand.support_id), None)
+                        if support is None or not support.stackable:
+                            continue
+                        ok, _ = check_support(candidate_box, placed_boxes)
+                        if not ok:
+                            continue
+                        ok, _ = check_stack_weight(candidate_box, w.weight, placed_boxes, weights_by_id)
+                        if not ok:
+                            continue
+
+                    # Espejo de X: la busqueda interna siempre construye desde x=0
+                    # hacia afuera; reflejarlo hace que lo primero colocado (el
+                    # fondo del contenedor, x=0 en la busqueda interna) termine
+                    # junto a la pared del fondo (x=length) y lo ultimo quede
+                    # cerca de la puerta (x=0), que es como se carga en la
+                    # realidad: del fondo hacia la puerta.
+                    final_x = container.length - candidate_box.x - candidate_box.dx
+                    candidate_center_x = piece_center_x(final_x, candidate_box.dx)
+                    prospective_weight = total_weight + w.weight
+                    prospective_moment = total_moment + w.weight * candidate_center_x
+                    if would_exceed_support_limits(prospective_weight, prospective_moment, road_weight_config):
+                        continue
+
+                    placed_boxes.append(candidate_box)
+                    weights_by_id[candidate_box.id] = w.weight
+                    placed_pieces.append(
+                        PlacedPiece(
+                            id=inst.instance_id,
+                            code=w.code,
+                            description=w.description,
+                            system=w.system,
+                            group=w.group,
+                            weight=w.weight,
+                            stackable=w.stackable,
+                            priority=w.priority,
+                            max_stack_weight=w.max_stack_weight,
+                            delivery_sequence=w.delivery_sequence,
+                            boxes_inside=w.boxes_inside,
+                            x=final_x,
+                            y=candidate_box.y,
+                            z=candidate_box.z,
+                            dx=candidate_box.dx,
+                            dy=candidate_box.dy,
+                            dz=candidate_box.dz,
+                            orientation_label=o.label,
+                            source_width=w.width,
+                            source_height=w.height,
+                            source_thickness=w.thickness,
+                            item_type=w.item_type,
+                            orientation_policy=w.orientation_policy,
+                            stackable_override=w.stackable_override,
+                            orientation_override=w.orientation_override,
+                            allow_tilt=w.allow_tilt,
+                            max_tilt_angle=w.max_tilt_angle,
+                            tilt_angle=o.tilt_angle,
+                            tilt_axis=o.tilt_axis,
+                            base_dx=o.base_dx if o.base_dx is not None else o.dx,
+                            base_dy=o.base_dy if o.base_dy is not None else o.dy,
+                            base_dz=o.base_dz if o.base_dz is not None else o.dz,
+                        )
                     )
-                candidates.extend(new_candidates)
+                    total_weight = prospective_weight
+                    total_moment = prospective_moment
 
-                placed_ok = True
-                break
+                    # Con clearance > 0, un candidato pegado (gap=0) a esta pieza
+                    # siempre violaria la separacion minima; se adelanta el hueco
+                    # requerido para que el candidato generado ya sea valido.
+                    new_candidates = [
+                        _Candidate(candidate_box.max_x + clearance, candidate_box.y, candidate_box.z, None),
+                        _Candidate(candidate_box.x, candidate_box.max_y + clearance, candidate_box.z, None),
+                    ]
+                    # Fase 5C: una pieza inclinada no puede servir de soporte -no
+                    # se ofrece como semilla de apilamiento (seccion 24 del pedido).
+                    if w.stackable and o.tilt_angle == 0:
+                        new_candidates.append(
+                            _Candidate(candidate_box.x, candidate_box.y, candidate_box.top_z, candidate_box.id)
+                        )
+                    candidates.extend(new_candidates)
+
+                    placed_ok = True
+                    break
 
         if not placed_ok:
             unloaded.append(

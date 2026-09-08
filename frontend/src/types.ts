@@ -6,6 +6,12 @@ export type ItemType = "box" | "pallet" | "panel" | "custom";
 
 export type OrientationPolicy = "free" | "upright" | "panel_edge_only" | "fixed";
 
+// CUBOX 2.0 Fase 5C - dominio seguro de Tilt/Inclination (ver backend
+// app/models/schemas.py:TILT_MAX_ANGLE_DEG). El backend es la autoridad
+// (Field(le=...) + resolver); esta constante es solo para validar en el
+// Wizard antes de enviar el request (seccion 15 del pedido).
+export const TILT_MAX_ANGLE_DEG = 30;
+
 // CUBOX 2.0 Fase 3A/3A.1 - representacion generica canonica (length/width/
 // height); width/height/thickness siguen siendo los campos legacy que ya
 // consume el resto del frontend, derivados de esta (ver backend
@@ -30,9 +36,26 @@ export interface WindowItem {
   priority: number;
   max_stack_weight: number | null;
   delivery_sequence: number | null;
+  /** Informativo (trazabilidad/inventario, Fase 6.2): cuantas cajas/unidades
+   * contiene este Load Unit (tipicamente un pallet). Nunca afecta packing. */
+  boxes_inside?: number | null;
   item_type?: ItemType;
   orientation_policy?: OrientationPolicy | null;
   dimensions?: Dimensions3D;
+  /** Fase 5B: valor CRUDO de Stackable tal como vino del Excel -None/undefined
+   * = celda vacia (herencia del default del plan). Distinto de `stackable`
+   * (ya materializado). Ver backend app/models/schemas.py:LoadItem. */
+  stackable_override?: boolean | null;
+  /** Fase 5B: igual idea que stackable_override, para Orientation. */
+  orientation_override?: OrientationPolicy | null;
+  /** Fase 5C-FINAL: si este item puede inclinarse (Tilt), ya resuelto del
+   * plan. PLAN-LEVEL ONLY -no hay override de item ni columna de Excel (ver
+   * backend app/core/handling_rules.py:resolve_plan_tilt). Solo tiene
+   * efecto real para item_type="panel". */
+  allow_tilt?: boolean;
+  /** Fase 5C-FINAL: angulo MAXIMO de Tilt en grados (magnitud, sin signo),
+   * ya resuelto del plan. null/undefined = sin Tilt definido. */
+  max_tilt_angle?: number | null;
 }
 
 // CUBOX 2.0 - generalizacion de ContainerSpec (ver backend app/models/schemas.py).
@@ -102,6 +125,7 @@ export interface PlacedPiece {
   priority: number;
   max_stack_weight: number | null;
   delivery_sequence: number | null;
+  boxes_inside?: number | null;
   locked: boolean;
   x: number;
   y: number;
@@ -116,6 +140,25 @@ export interface PlacedPiece {
   item_type?: ItemType;
   orientation_policy?: OrientationPolicy | null;
   source_dimensions?: Dimensions3D;
+  /** Fase 5B: ver WindowItem.stackable_override -copiado tal cual del item de origen. */
+  stackable_override?: boolean | null;
+  orientation_override?: OrientationPolicy | null;
+  /** Fase 5C-FINAL: ver WindowItem.allow_tilt/max_tilt_angle -PLAN-LEVEL
+   * ONLY, ya resuelto (sin badge de Override: no existe override de item). */
+  allow_tilt?: boolean;
+  max_tilt_angle?: number | null;
+  /** Fase 5C-FINAL: angulo de Tilt REALMENTE usado por esta pieza, SIGNED
+   * (grados; positivo/negativo = direccion, 0 = sin inclinar) -el mismo
+   * valor que debe renderizar Scene3D. */
+  tilt_angle?: number;
+  /** Fase 5C: 'x' o 'y' -eje horizontal de Thickness sobre el que se inclina
+   * esta pieza en su orientacion actual (null = sin eje de Tilt aplicable). */
+  tilt_axis?: "x" | "y" | null;
+  /** Fase 5C: dx/dy/dz SIN Tilt (0 grados) para la orientacion actual -usados
+   * para recalcular la geometria al pedir un nuevo angulo (ver /api/set-tilt). */
+  base_dx?: number | null;
+  base_dy?: number | null;
+  base_dz?: number | null;
 }
 
 export interface UnloadedItem {
@@ -132,11 +175,17 @@ export interface UnloadedItem {
   priority: number;
   max_stack_weight: number | null;
   delivery_sequence: number | null;
+  boxes_inside?: number | null;
   reason: string;
   reason_code: string;
   item_type?: ItemType;
   orientation_policy?: OrientationPolicy | null;
   dimensions?: Dimensions3D;
+  /** Fase 5B: ver WindowItem.stackable_override -copiado tal cual del item de origen. */
+  stackable_override?: boolean | null;
+  orientation_override?: OrientationPolicy | null;
+  allow_tilt?: boolean;
+  max_tilt_angle?: number | null;
 }
 
 export interface PackingMetrics {
@@ -264,6 +313,23 @@ export interface ImportPreview {
 export interface ImportDefaults {
   orientationPolicy?: OrientationPolicy;
   stackable?: boolean;
+  // Fase 5C-FINAL: Tilt NO tiene equivalente aca -es PLAN-LEVEL ONLY, sin
+  // columna de Excel (ver PlanHandlingRules.default_allow_tilt/max_tilt_angle).
+}
+
+// CUBOX 2.0 Fase 5B - defaults de HANDLING RULES a nivel de PLAN, enviados
+// en CADA /api/pack y /api/optimize-remaining (ver backend
+// app/models/schemas.py:PlanHandlingRules) para que el backend pueda
+// re-resolver items "inherit" aunque el plan default haya cambiado despues
+// del import. Todos los campos opcionales: omitir el objeto entero (o dejar
+// un campo undefined) se comporta igual que antes de que esto existiera.
+export interface PlanHandlingRules {
+  default_stackable?: boolean | null;
+  default_orientation_policy?: OrientationPolicy | null;
+  default_max_stack_weight?: number | null;
+  /** Fase 5C: solo tiene efecto real para Panels & Fragile (item_type="panel"). */
+  default_allow_tilt?: boolean | null;
+  default_max_tilt_angle?: number | null;
 }
 
 // Espacio de carga definido a mano (Truck/Trailer/Custom Container), tal
@@ -296,5 +362,14 @@ export interface InitialWorkspaceConfig {
     clearanceMm: number;
     weightBalanceMode: WeightBalanceMode;
     loadingAnchor: LoadingAnchor;
+    /** Fase 5B: defaults del plan elegidos en el wizard (Default Stackable /
+     * Default Orientation), ahora si forwarded al workspace -antes se
+     * consumian una sola vez en el import y se descartaban. */
+    defaultStackable: boolean;
+    orientationPolicy: OrientationPolicy;
+    /** Fase 5C: defaults de Tilt elegidos en el wizard (solo aplican para
+     * Panels & Fragile) -ver HandlingRulesStep.tsx. */
+    defaultAllowTilt: boolean;
+    defaultMaxTiltAngle: number | null;
   };
 }
