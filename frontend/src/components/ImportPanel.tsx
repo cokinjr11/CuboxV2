@@ -1,6 +1,5 @@
 import { useRef, useState } from "react";
 import {
-  TILT_MAX_ANGLE_DEG,
   type ContainerSpec,
   type CustomLoadSpaceRequestBody,
   type LoadingAnchor,
@@ -89,8 +88,6 @@ export function ImportPanel({
   loadingAnchor,
   defaultStackable,
   orientationPolicy,
-  defaultAllowTilt,
-  defaultMaxTiltAngle,
   loading,
   error,
   onFileSelected,
@@ -103,8 +100,6 @@ export function ImportPanel({
   onLoadingAnchorChange,
   onDefaultStackableChange,
   onOrientationPolicyChange,
-  onDefaultAllowTiltChange,
-  onDefaultMaxTiltAngleChange,
   onPack,
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -216,33 +211,6 @@ export function ImportPanel({
               ))}
             </select>
           </label>
-          {items[0]?.item_type === "panel" && (
-            <>
-              <label className="checkbox-row">
-                <input
-                  type="checkbox"
-                  checked={defaultAllowTilt}
-                  onChange={(e) => onDefaultAllowTiltChange(e.target.checked)}
-                />
-                Allow Tilt
-              </label>
-              {defaultAllowTilt && (
-                <label className="inline-field">
-                  Maximum Tilt Angle (°)
-                  <input
-                    type="number"
-                    min={0}
-                    max={TILT_MAX_ANGLE_DEG}
-                    value={defaultMaxTiltAngle || ""}
-                    onChange={(e) => {
-                      const raw = Number(e.target.value);
-                      onDefaultMaxTiltAngleChange(Number.isFinite(raw) ? Math.min(TILT_MAX_ANGLE_DEG, Math.max(0, raw)) : null);
-                    }}
-                  />
-                </label>
-              )}
-            </>
-          )}
           <label className="checkbox-row">
             <input
               type="checkbox"

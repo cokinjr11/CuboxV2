@@ -147,16 +147,6 @@ export function ReviewStep({ draft, catalog }: Props) {
               <span className="review-label">Weight Balance</span>
               <span>{WEIGHT_BALANCE_LABELS[draft.handlingRules.weightBalanceMode]}</span>
             </div>
-            {draft.planningMode === "panels_fragile" && (
-              <div className="review-row">
-                <span className="review-label">Tilt Enabled</span>
-                <span>
-                  {draft.handlingRules.defaultAllowTilt
-                    ? `Yes (max ${draft.handlingRules.defaultMaxTiltAngle}°)`
-                    : "No"}
-                </span>
-              </div>
-            )}
           </>
         )}
       </div>
