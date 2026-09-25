@@ -42,7 +42,6 @@ from app.core.plan_store import (
     PlanRow,
     UnsupportedSchemaVersionError,
 )
-from app.core.reasons import UnloadedReason
 from app.core.reserved_zones import ReservedZone, central_aisle_zone
 from app.core.road_weight import evaluate_road_weight, weight_point_from_placed
 from app.core.sequence import (
@@ -95,11 +94,12 @@ from app.models.schemas import (
     RotatePieceRequest,
     SetTiltRequest,
     StepMode,
-    UnloadedItem,
     UnlockPieceRequest,
     WeightBalanceMode,
     WindowItem,
 )
+from app.services.piece_mapping import placed_to_item, placed_to_unloaded, unloaded_to_item, unloaded_to_placed
+from app.services.plan_state import reserved_zones_to_state
 
 router = APIRouter(prefix="/api")
 
@@ -148,14 +148,6 @@ def _reserved_zones() -> list[ReservedZone]:
     return _current_state["reserved_zones"]
 
 
-def _reserved_zones_out(zones: list[ReservedZone]) -> list[ReservedZoneOut]:
-    """Version serializable de las zonas reservadas para exponer en
-    PackingResult -asi el frontend puede dibujar el pasillo central
-    exactamente donde el backend lo calculo, sin recalcular el centrado por
-    su cuenta."""
-    return [ReservedZoneOut(x=z.x, y=z.y, z=z.z, length=z.length, width=z.width, height=z.height, label=z.label) for z in zones]
-
-
 def _clearance() -> float:
     return _current_state["clearance"]
 
@@ -197,65 +189,6 @@ def _refresh_derived(state: PackingResult) -> None:
     state.metrics = compute_metrics(load_space, state.placed, state.unloaded)
     _apply_sequence_fields(state, load_space, _current_state["loading_anchor"])
     state.road_weight = _road_weight_for(load_space, state.placed)
-
-
-def _window_item_from_placed(p: PlacedPiece) -> WindowItem:
-    # Fase 5B: stackable_override/orientation_override se "congelan" al valor
-    # YA resuelto (p.stackable/p.orientation_policy) en vez de copiar el
-    # override crudo original -esta pieza ya paso por una resolucion real
-    # (el pack que la coloco), Optimize Remaining no debe hacerla "derivar"
-    # a un nuevo default de plan que haya cambiado desde entonces (ver
-    # core/handling_rules.py: override no-None siempre gana).
-    return WindowItem(
-        code=p.code,
-        description=p.description,
-        width=p.source_width,
-        height=p.source_height,
-        thickness=p.source_thickness,
-        weight=p.weight,
-        quantity=1,
-        system=p.system,
-        group=p.group,
-        stackable=p.stackable,
-        stackable_override=p.stackable,
-        priority=p.priority,
-        max_stack_weight=p.max_stack_weight,
-        delivery_sequence=p.delivery_sequence,
-        boxes_inside=p.boxes_inside,
-        item_type=p.item_type,
-        orientation_policy=p.orientation_policy,
-        orientation_override=p.orientation_policy,
-        # Fase 5C-FINAL: Tilt es PLAN-LEVEL ONLY -no hay valor de item que
-        # "congelar" (resolve_plan_tilt en handling_rules.py ignora estos
-        # campos del LoadItem y re-resuelve directo de item_type + el plan
-        # ACTUAL que llega a Optimize Remaining -ver core/optimize.py).
-    )
-
-
-def _window_item_from_unloaded(u: UnloadedItem) -> WindowItem:
-    # Ver comentario de _window_item_from_placed: mismo criterio de "congelar"
-    # el valor ya resuelto como override explicito.
-    return WindowItem(
-        code=u.code,
-        description=u.description,
-        width=u.width,
-        height=u.height,
-        thickness=u.thickness,
-        weight=u.weight,
-        quantity=1,
-        system=u.system,
-        group=u.group,
-        stackable=u.stackable,
-        stackable_override=u.stackable,
-        priority=u.priority,
-        max_stack_weight=u.max_stack_weight,
-        delivery_sequence=u.delivery_sequence,
-        boxes_inside=u.boxes_inside,
-        item_type=u.item_type,
-        orientation_policy=u.orientation_policy,
-        orientation_override=u.orientation_policy,
-        # Fase 5C-FINAL: ver comentario equivalente en _window_item_from_placed.
-    )
 
 
 @router.get("/containers", response_model=list[ContainerSpec])
@@ -357,7 +290,7 @@ def pack(request: PackRequest):
         plan_handling_rules=request.plan_handling_rules,
     )
 
-    zones_out = _reserved_zones_out(zones)
+    zones_out = reserved_zones_to_state(zones)
     _apply_sequence_fields(best, container, request.loading_anchor)
     best.road_weight = _road_weight_for(container, best.placed)
     for alt in alternatives:
@@ -434,8 +367,8 @@ def optimize_remaining(req: OptimizeRemainingRequest = OptimizeRemainingRequest(
     if locked_weight > container.max_weight + TOL:
         raise HTTPException(409, "Las piezas bloqueadas ya exceden el peso maximo del contenedor")
 
-    remaining_items = [_window_item_from_placed(p) for p in unlocked] + [
-        _window_item_from_unloaded(u) for u in state.unloaded
+    remaining_items = [placed_to_item(p) for p in unlocked] + [
+        unloaded_to_item(u) for u in state.unloaded
     ]
 
     best, alternatives = run_optimization(
@@ -449,7 +382,7 @@ def optimize_remaining(req: OptimizeRemainingRequest = OptimizeRemainingRequest(
         plan_handling_rules=_current_state["plan_handling_rules"],
     )
 
-    zones_out = _reserved_zones_out(_reserved_zones())
+    zones_out = reserved_zones_to_state(_reserved_zones())
     _apply_sequence_fields(best, container, _current_state["loading_anchor"])
     best.road_weight = _road_weight_for(container, best.placed)
     for alt in alternatives:
@@ -779,32 +712,7 @@ def remove_piece(req: RemovePieceRequest):
 
     _current_state["history"].push(state.placed, state.unloaded)
     state.placed = [p for p in state.placed if p.id != piece.id]
-    state.unloaded.append(
-        UnloadedItem(
-            id=piece.id,
-            code=piece.code,
-            description=piece.description,
-            width=piece.source_width,
-            height=piece.source_height,
-            thickness=piece.source_thickness,
-            weight=piece.weight,
-            system=piece.system,
-            group=piece.group,
-            stackable=piece.stackable,
-            priority=piece.priority,
-            max_stack_weight=piece.max_stack_weight,
-            delivery_sequence=piece.delivery_sequence,
-            boxes_inside=piece.boxes_inside,
-            reason="Removido manualmente",
-            reason_code=UnloadedReason.MANUAL_REMOVE.value,
-            item_type=piece.item_type,
-            orientation_policy=piece.orientation_policy,
-            stackable_override=piece.stackable_override,
-            orientation_override=piece.orientation_override,
-            allow_tilt=piece.allow_tilt,
-            max_tilt_angle=piece.max_tilt_angle,
-        )
-    )
+    state.unloaded.append(placed_to_unloaded(piece))
     _refresh_derived(state)
 
     return state
@@ -876,18 +784,8 @@ def insert_piece(req: InsertPieceRequest):
     _current_state["history"].push(state.placed, state.unloaded)
     state.unloaded = [u for u in state.unloaded if u.id != item.id]
     state.placed.append(
-        PlacedPiece(
-            id=item.id,
-            code=item.code,
-            description=item.description,
-            system=item.system,
-            group=item.group,
-            weight=item.weight,
-            stackable=item.stackable,
-            priority=item.priority,
-            max_stack_weight=item.max_stack_weight,
-            delivery_sequence=item.delivery_sequence,
-            boxes_inside=item.boxes_inside,
+        unloaded_to_placed(
+            item,
             x=req.x,
             y=req.y,
             z=req.z,
@@ -895,15 +793,6 @@ def insert_piece(req: InsertPieceRequest):
             dy=req.dy,
             dz=req.dz,
             orientation_label=orientation_label,
-            source_width=item.width,
-            source_height=item.height,
-            source_thickness=item.thickness,
-            item_type=item.item_type,
-            orientation_policy=item.orientation_policy,
-            stackable_override=item.stackable_override,
-            orientation_override=item.orientation_override,
-            allow_tilt=item.allow_tilt,
-            max_tilt_angle=item.max_tilt_angle,
             tilt_angle=insert_tilt_angle,
             tilt_axis=insert_tilt_axis,
             base_dx=insert_base_dx,
@@ -1175,7 +1064,7 @@ def get_plan(plan_id: str, repo: PlanRepository = Depends(get_plan_repository)):
 
     metrics = compute_metrics(restored.load_space, restored.placed, restored.unloaded)
     result = PackingResult(container=restored.load_space, placed=restored.placed, unloaded=restored.unloaded, metrics=metrics)
-    result.reserved_zones = _reserved_zones_out(restored.reserved_zones)
+    result.reserved_zones = reserved_zones_to_state(restored.reserved_zones)
 
     # Reemplaza _current_state POR COMPLETO (seccion 35/36 del pedido: nunca
     # mezclar con lo que hubiera de un plan anterior) y arranca un historial

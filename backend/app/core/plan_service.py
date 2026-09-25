@@ -15,7 +15,6 @@ desincronizarse."""
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -23,7 +22,6 @@ from uuid import uuid4
 from app.core.plan_store import SCHEMA_VERSION, CorruptPlanStateError, UnsupportedSchemaVersionError, PlanRow
 from app.core.reserved_zones import ReservedZone
 from app.models.schemas import (
-    ItemType,
     LoadingAnchor,
     LoadSpaceSpec,
     OptimizationMode,
@@ -34,21 +32,15 @@ from app.models.schemas import (
     WeightBalanceMode,
 )
 
-_MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+# Integracion NAGSA, A1: el FORMATO del estado (PlanState + serializacion) y
+# el resumen de listado viven en services/. Este modulo queda como traductor
+# PlanRow <-> estado de dominio para el modo local (se mueve a local/ en A3;
+# hasta entonces es la unica dependencia core -> services, ver
+# docs/CHECKLIST_INTEGRACION.md).
+from app.services.plan_state import PlanState, deserialize_plan_state, reserved_zones_from_state, reserved_zones_to_state, serialize_plan_state
+from app.services.plan_summary import summarize_plan_state
 
-LOAD_TYPE_LABELS: dict[ItemType, str] = {
-    ItemType.BOX: "Loose Boxes",
-    ItemType.PALLET: "Palletized Load",
-    ItemType.PANEL: "Panels & Fragile",
-    ItemType.CUSTOM: "Custom Load",
-}
-"""Fase 5D: Recent Plans no persiste un 'planning_mode' propio -el ItemType
-de las piezas ya lo determina 1 a 1 en el frontend (ver
-wizardTypes.ts:PLANNING_MODE_ITEM_TYPE: box<->loose_boxes,
-pallet<->palletized_load, panel<->panels_fragile, custom<->custom_load;
-build_pallets no tiene item_type propio, es "Coming Soon"). Reutilizar ese
-mismo mapeo aca evita guardar un campo redundante que podria desincronizarse
-del contenido real del plan."""
+_MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 
 def new_plan_id() -> str:
@@ -71,13 +63,6 @@ def default_plan_name(now: datetime | None = None) -> str:
     se arma el string a mano."""
     now = now or datetime.now(timezone.utc)
     return f"Load Plan - {_MONTH_ABBR[now.month - 1]} {now.day}, {now.year}"
-
-
-def _load_type_label(placed: list[PlacedPiece], unloaded: list[UnloadedItem]) -> str:
-    first_item_type = placed[0].item_type if placed else (unloaded[0].item_type if unloaded else None)
-    if first_item_type is None:
-        return "Load Plan"
-    return LOAD_TYPE_LABELS.get(first_item_type, "Load Plan")
 
 
 @dataclass
@@ -115,28 +100,29 @@ def build_plan_snapshot(
     (catalogo o custom, sin fallback a catalogo), Plan Handling Rules,
     config activa (clearance/optimization/weight balance/loading anchor) y
     las zonas reservadas reales."""
-    state = {
-        "schema_version": SCHEMA_VERSION,
-        "load_space": load_space.model_dump(mode="json"),
-        "plan_handling_rules": plan_handling_rules.model_dump(mode="json") if plan_handling_rules is not None else None,
-        "clearance": clearance,
-        "optimization_mode": optimization_mode.value,
-        "weight_balance_mode": weight_balance_mode.value,
-        "loading_anchor": loading_anchor.value,
-        "reserved_zones": [
-            {"x": z.x, "y": z.y, "z": z.z, "length": z.length, "width": z.width, "height": z.height, "label": z.label}
-            for z in reserved_zones
-        ],
-        "placed": [p.model_dump(mode="json") for p in result.placed],
-        "unloaded": [u.model_dump(mode="json") for u in result.unloaded],
-    }
+    # Integracion NAGSA, A1 (H12): dos responsabilidades separadas -armar/
+    # serializar el estado (services/plan_state.py) y resumirlo para las
+    # columnas de Recent Plans (services/plan_summary.py). Esta funcion solo
+    # las compone; su firma y su resultado no cambian.
+    state = PlanState(
+        load_space=load_space,
+        plan_handling_rules=plan_handling_rules,
+        clearance=clearance,
+        optimization_mode=optimization_mode,
+        weight_balance_mode=weight_balance_mode,
+        loading_anchor=loading_anchor,
+        reserved_zones=reserved_zones_to_state(reserved_zones),
+        placed=result.placed,
+        unloaded=result.unloaded,
+    )
+    summary = summarize_plan_state(state)
     return PlanSnapshot(
-        state_json=json.dumps(state),
-        load_type=_load_type_label(result.placed, result.unloaded),
-        load_space_name=load_space.name,
-        total_items=len(result.placed) + len(result.unloaded),
-        loaded_items=len(result.placed),
-        unloaded_items=len(result.unloaded),
+        state_json=serialize_plan_state(state),
+        load_type=summary.load_type,
+        load_space_name=summary.load_space_name,
+        total_items=summary.total_items,
+        loaded_items=summary.loaded_items,
+        unloaded_items=summary.unloaded_items,
     )
 
 
@@ -168,31 +154,18 @@ def parse_plan_state(row: PlanRow) -> RestoredPlanState:
         raise UnsupportedSchemaVersionError(row.schema_version)
 
     try:
-        data = json.loads(row.state_json)
-        load_space = LoadSpaceSpec.model_validate(data["load_space"])
-        raw_rules = data.get("plan_handling_rules")
-        plan_handling_rules = PlanHandlingRules.model_validate(raw_rules) if raw_rules is not None else None
-        placed = [PlacedPiece.model_validate(p) for p in data["placed"]]
-        unloaded = [UnloadedItem.model_validate(u) for u in data["unloaded"]]
-        reserved_zones = [
-            ReservedZone(x=z["x"], y=z["y"], z=z["z"], length=z["length"], width=z["width"], height=z["height"], label=z["label"])
-            for z in data.get("reserved_zones", [])
-        ]
-        clearance = float(data.get("clearance", 0.0))
-        optimization_mode = OptimizationMode(data.get("optimization_mode", OptimizationMode.BEST_SPACE.value))
-        weight_balance_mode = WeightBalanceMode(data.get("weight_balance_mode", WeightBalanceMode.NORMAL.value))
-        loading_anchor = LoadingAnchor(data.get("loading_anchor", LoadingAnchor.BACK_RIGHT.value))
-    except (KeyError, ValueError, TypeError) as e:
+        state = deserialize_plan_state(row.state_json)
+    except CorruptPlanStateError as e:
         raise CorruptPlanStateError(f"Load Plan {row.plan_id} tiene un estado invalido o incompatible: {e}") from e
 
     return RestoredPlanState(
-        load_space=load_space,
-        placed=placed,
-        unloaded=unloaded,
-        plan_handling_rules=plan_handling_rules,
-        clearance=clearance,
-        optimization_mode=optimization_mode,
-        weight_balance_mode=weight_balance_mode,
-        loading_anchor=loading_anchor,
-        reserved_zones=reserved_zones,
+        load_space=state.load_space,
+        placed=state.placed,
+        unloaded=state.unloaded,
+        plan_handling_rules=state.plan_handling_rules,
+        clearance=state.clearance,
+        optimization_mode=state.optimization_mode,
+        weight_balance_mode=state.weight_balance_mode,
+        loading_anchor=state.loading_anchor,
+        reserved_zones=reserved_zones_from_state(state.reserved_zones),
     )

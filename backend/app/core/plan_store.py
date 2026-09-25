@@ -38,14 +38,20 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-SCHEMA_VERSION = 1
-"""Fase 5D, seccion 30/42 del pedido: version del ESQUEMA de `state_json`
-(no de la tabla SQL). GET /api/plans/{id} rechaza limpiamente (409, sin
-crashear) cualquier fila cuyo schema_version no sea este -ver
-plan_service.py:parse_plan_state. Sin migraciones automaticas todavia (solo
-existe la version 1); agregar una version 2 en el futuro implica escribir
-un migrador explicito, nunca reinterpretar en silencio datos de un esquema
-distinto."""
+# Integracion NAGSA, A1: la version y los errores del FORMATO de state_json
+# viven en core/plan_schema.py (el modo integrado /api/v1 los necesita sin
+# SQLite). Se re-exportan aca con los mismos nombres por compatibilidad.
+from app.core.plan_schema import SCHEMA_VERSION, CorruptPlanStateError, UnsupportedSchemaVersionError
+
+__all__ = [
+    "SCHEMA_VERSION",
+    "CorruptPlanStateError",
+    "UnsupportedSchemaVersionError",
+    "DEFAULT_DB_PATH",
+    "PlanNotFoundError",
+    "PlanRow",
+    "PlanRepository",
+]
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parents[2] / "data" / "cubox.db"
 """backend/data/cubox.db -ver seccion 5 del pedido. Nunca se commitea a Git
@@ -58,21 +64,6 @@ class PlanNotFoundError(Exception):
     def __init__(self, plan_id: str):
         self.plan_id = plan_id
         super().__init__(f"Load Plan no encontrado: {plan_id}")
-
-
-class UnsupportedSchemaVersionError(Exception):
-    """El plan persistido usa un schema_version que esta version de Cubox no
-    sabe interpretar (seccion 42 del pedido)."""
-
-    def __init__(self, found: int):
-        self.found = found
-        super().__init__(f"schema_version {found} no soportado (esperado {SCHEMA_VERSION})")
-
-
-class CorruptPlanStateError(Exception):
-    """El JSON persistido no es valido o no matchea los schemas de Pydantic
-    actuales (seccion 41 del pedido: nunca confiar ciegamente en el JSON
-    guardado)."""
 
 
 @dataclass
