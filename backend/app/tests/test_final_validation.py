@@ -100,3 +100,22 @@ def test_detects_total_weight_exceeded():
     placed = [_piece("a", x=0, y=0, weight=CONTAINER.max_weight + 1000)]
     errors = validate_for_export(_result(placed), CONTAINER)
     assert any("Peso total" in e for e in errors)
+
+
+def test_detects_operational_sequence_cycle_as_a_blocking_error():
+    """Fase 6A, seccion 36: un SEQUENCE_CYCLE es una imposibilidad fisica, no
+    una preferencia de negocio -debe bloquear el export como ERROR. No hay
+    forma de producir un ciclo real con geometria valida (packer/manual_move
+    ya lo evitan), asi que se fuerza uno con un monkeypatch minimo, igual
+    criterio que test_sequence.py."""
+    import app.core.final_validation as final_validation_module
+
+    placed = [_piece("a", x=0, y=0), _piece("b", x=200, y=0)]
+    original = final_validation_module.detect_sequence_cycle
+    try:
+        final_validation_module.detect_sequence_cycle = lambda deps: ["a", "b"]
+        errors = validate_for_export(_result(placed), CONTAINER)
+    finally:
+        final_validation_module.detect_sequence_cycle = original
+
+    assert any("sequence conflict" in e.lower() for e in errors)

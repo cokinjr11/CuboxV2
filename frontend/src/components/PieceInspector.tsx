@@ -1,12 +1,16 @@
 import { useState } from "react";
-import type { PlacedPiece } from "../types";
+import type { PackingResult, PlacedPiece } from "../types";
 import { dimensionsLabel, formatDimensions } from "../utils/dimensions";
 import { itemTypeNoun } from "../utils/itemTypeLabels";
+import { loadPriorityLabel } from "../utils/loadPriority";
 
 type OrientationChangeResult = { ok: boolean; reason: string };
 
 interface Props {
   piece: PlacedPiece;
+  /** Fase 6A, seccion 32: fuente de Loading/Unloading Position, Blocked By y
+   * de la lista de codigos para mostrar los ids de bloqueo de forma legible. */
+  result: PackingResult;
   onRotate: () => Promise<OrientationChangeResult>;
   onTurn: () => Promise<OrientationChangeResult>;
   onSetTilt: (angle: number) => Promise<OrientationChangeResult>;
@@ -56,7 +60,7 @@ function formatSignedTilt(angle: number): string {
   return angle > 0 ? `+${angle}°` : angle < 0 ? `${angle}°` : "0°";
 }
 
-export function PieceInspector({ piece, onRotate, onTurn, onSetTilt, onRemove, onToggleLock }: Props) {
+export function PieceInspector({ piece, result, onRotate, onTurn, onSetTilt, onRemove, onToggleLock }: Props) {
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<{ ok: boolean; message: string } | null>(null);
   const orientationLocked = piece.orientation_policy === "fixed";
@@ -64,6 +68,13 @@ export function PieceInspector({ piece, onRotate, onTurn, onSetTilt, onRemove, o
   const orientationRule = ruleBadge(piece.orientation_override);
   const maxTiltAngle = piece.max_tilt_angle ?? 0;
   const currentTilt = piece.tilt_angle ?? 0;
+
+  // Fase 6A, seccion 32: posiciones 1-based en las secuencias ya calculadas
+  // -null si la pieza no aparece (no deberia pasar salvo datos parciales).
+  const loadPosition = result.load_sequence.indexOf(piece.id);
+  const unloadPosition = result.unload_sequence.indexOf(piece.id);
+  const blockedByIds = result.blocked_by[piece.id] ?? [];
+  const codeById = new Map(result.placed.map((p) => [p.id, p.code]));
 
   async function handleOrientationChange(action: () => Promise<OrientationChangeResult>) {
     setBusy(true);
@@ -133,8 +144,8 @@ export function PieceInspector({ piece, onRotate, onTurn, onSetTilt, onRemove, o
         <dd>
           {piece.stackable ? "Yes" : "No"} <span className={stackableRule.className}>{stackableRule.label}</span>
         </dd>
-        <dt>Priority</dt>
-        <dd>{piece.priority}</dd>
+        <dt>Load Priority</dt>
+        <dd>{loadPriorityLabel(piece.priority)}</dd>
         {piece.allow_tilt && (
           <>
             <dt>Tilt</dt>
@@ -147,6 +158,23 @@ export function PieceInspector({ piece, onRotate, onTurn, onSetTilt, onRemove, o
             </dd>
             <dt>Current Tilt</dt>
             <dd>{formatSignedTilt(currentTilt)}</dd>
+          </>
+        )}
+        {/* Fase 6A, seccion 32: solo lo minimo util -no una pestaña propia. */}
+        <dt>Loading Position</dt>
+        <dd>{loadPosition >= 0 ? loadPosition + 1 : "-"}</dd>
+        <dt>Unloading Position</dt>
+        <dd>{unloadPosition >= 0 ? unloadPosition + 1 : "-"}</dd>
+        {piece.delivery_sequence != null && (
+          <>
+            <dt>Delivery Sequence</dt>
+            <dd>{piece.delivery_sequence}</dd>
+          </>
+        )}
+        {blockedByIds.length > 0 && (
+          <>
+            <dt>Blocked By</dt>
+            <dd>{blockedByIds.map((id) => codeById.get(id) ?? id).join(", ")}</dd>
           </>
         )}
       </dl>

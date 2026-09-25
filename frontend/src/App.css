@@ -38,6 +38,61 @@
   line-height: 1;
 }
 
+/* Fase 5D: Plan Name + estado de autosave, ver components/PlanNameBar.tsx. */
+
+.plan-name-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.plan-name-display {
+  background: none;
+  border: none;
+  color: var(--color-text);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 0;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 70%;
+}
+
+.plan-name-edit-icon {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.plan-name-input {
+  font-size: 14px;
+  font-weight: 600;
+  background: var(--color-bg-panel);
+  color: var(--color-text);
+  border: 1px solid var(--color-accent);
+  border-radius: 4px;
+  padding: 3px 6px;
+  max-width: 70%;
+}
+
+.plan-save-status {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  flex: 0 0 auto;
+}
+
+.plan-save-status-error {
+  color: var(--color-danger);
+}
+
+.plan-save-status-saved {
+  color: var(--color-success);
+}
+
 .settings-btn:hover {
   background: var(--color-bg-panel-hover);
 }
@@ -109,6 +164,48 @@ h1 {
   font-size: 12px;
   color: var(--color-text-muted);
   margin: 12px 0 6px;
+}
+
+/* Fase 6C: Plan Validation -mismo patron compacto que
+   .sequence-warning-categories/.sequence-warning-details (Fase 6A), nunca
+   un modal ni un panel grande nuevo. */
+.plan-validation-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.plan-validation-categories {
+  list-style: none;
+  margin: 6px 0;
+  padding: 0;
+  font-size: 12px;
+}
+
+.plan-validation-row {
+  margin-bottom: 4px;
+  color: var(--color-text-muted);
+}
+
+.plan-validation-external-hint {
+  margin-left: 4px;
+}
+
+.plan-validation-road-weight,
+.plan-validation-payload {
+  list-style: none;
+  margin: 2px 0 0 18px;
+  padding: 0;
+  font-size: 11px;
+}
+
+.plan-validation-details {
+  margin-top: 4px;
+}
+
+.plan-validation-detail-heading {
+  margin: 8px 0 0;
+  font-weight: 600;
 }
 
 select,
@@ -207,6 +304,28 @@ input[type="text"] {
   margin: 0;
 }
 
+.checkbox-group {
+  max-height: 160px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 8px;
+  margin-bottom: 8px;
+}
+
+.checkbox-group .checkbox-row {
+  margin-bottom: 4px;
+}
+
+/* Fase 6B.1: separa el bloque de "Show Sequence Numbers" del bloque de la
+   Guia Step-by-Step -son toggles independientes, no deben leerse como un
+   solo grupo. */
+.sequence-number-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border);
+}
+
 .inline-field {
   display: flex;
   align-items: center;
@@ -215,6 +334,18 @@ input[type="text"] {
   font-size: 12px;
   color: var(--color-text-muted);
   margin-bottom: 8px;
+}
+
+/* Fase 6B: fila compacta para Step Mode + Pieces per Step lado a lado en el
+   Guide panel -mismos .inline-field de siempre, solo en fila. */
+.inline-field-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.inline-field-row .inline-field {
+  flex: 1 1 auto;
 }
 
 .inline-field select,
@@ -304,6 +435,43 @@ input[type="text"] {
   font-size: 13px;
   color: var(--color-danger);
   margin-top: 6px;
+}
+
+/* Fase 6A: lista compacta de warnings operacionales (SequencePanel/Piece
+   Inspector) -reusa .error para el titulo, solo agrega el bullet list. */
+.sequence-warnings ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.sequence-warnings li {
+  margin-bottom: 2px;
+}
+
+/* Fase 6A.1: resumen por categoria SIEMPRE visible (no cuenta como
+   "detalle" -es el resumen); .sequence-warning-details es la lista
+   completa, solo se monta en el DOM cuando el usuario pide "View details"
+   (nunca cientos de <li> ocultas con CSS -detailsOpen gatea el render). */
+.sequence-warning-categories {
+  margin: 6px 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.sequence-warning-details {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.sequence-warning-details li {
+  margin-bottom: 2px;
 }
 
 .success {
@@ -442,6 +610,13 @@ th {
   width: auto;
   padding: 4px 10px;
   margin-bottom: 0;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 16px;
 }
 
 .settings-section {

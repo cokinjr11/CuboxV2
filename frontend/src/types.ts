@@ -95,7 +95,7 @@ export interface ContainerSpec {
 // Mismo shape que ContainerSpec, nombre generico para CUBOX 2.0.
 export type LoadSpaceSpec = ContainerSpec;
 
-export type OptimizationMode = "best_space" | "keep_groups" | "keep_systems";
+export type OptimizationMode = "best_space" | "keep_groups" | "keep_systems" | "prioritize_delivery";
 
 export type ColorByMode = "default" | "group" | "system" | "priority";
 
@@ -112,6 +112,81 @@ export type ReportDirection = "load" | "unload";
 export interface ReportMetadata {
   projectName: string;
   customer: string;
+}
+
+// Fase 6B: anotacion de Delivery Sequence sobre pasos de descarga YA
+// resueltos (nunca reordenan `steps` -ver backend core/sequence.py:
+// annotate_unload_steps_with_delivery / group_unload_steps_into_delivery_sections).
+export interface UnloadStepDeliveryInfo {
+  delivery_sequences: number[];
+  is_mixed: boolean;
+  conflict_messages: string[];
+}
+
+export interface UnloadDeliverySection {
+  label: string | null;
+  step_indices: number[];
+}
+
+export interface ReportStepsResult {
+  steps: string[][];
+  unload_step_info: UnloadStepDeliveryInfo[] | null;
+  delivery_sections: UnloadDeliverySection[] | null;
+}
+
+// Fase 6B.1, seccion 11-17: usado para un chequeo previo (fail-fast) antes
+// de arrancar el loop de capturas -evita gastar decenas de screenshots
+// cuando el plan activo ya es invalido (ver core/final_validation.py, el
+// mismo chequeo que ya corre el backend antes de construir cualquier PDF).
+// Fase 6C - mismas categorias chicas y estables que
+// backend/app/models/schemas.py:ValidationCategory (seccion 5 del pedido:
+// "do not create dozens of tiny categories").
+export type ValidationCategory =
+  | "data_integrity"
+  | "load_space"
+  | "collision_clearance"
+  | "support_stability"
+  | "orientation"
+  | "stack_weight"
+  | "payload"
+  | "road_weight"
+  | "operational_sequence"
+  | "delivery_sequence"
+  | "unloaded_items";
+
+export type ValidationSeverity = "error" | "warning";
+
+export interface ValidationIssue {
+  category: ValidationCategory;
+  severity: ValidationSeverity;
+  message: string;
+  item_id: string | null;
+}
+
+export type CategoryStatusValue = "pass" | "warning" | "error" | "not_applicable";
+
+export interface CategoryStatus {
+  category: ValidationCategory;
+  status: CategoryStatusValue;
+  count: number;
+}
+
+export type PlanValidationStatus = "ready" | "ready_with_warnings" | "not_ready";
+
+export interface ReportValidationResult {
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+  // Fase 6C: aditivo -mismo objeto que devolvia /report/validate antes,
+  // con estos campos nuevos agregados (ver ReportValidationResponse en
+  // backend/app/models/schemas.py).
+  status: PlanValidationStatus;
+  error_count: number;
+  warning_count: number;
+  unloaded_count: number;
+  categories: CategoryStatus[];
+  error_issues: ValidationIssue[];
+  warning_issues: ValidationIssue[];
 }
 
 export interface PlacedPiece {
@@ -246,6 +321,24 @@ export interface RoadWeightMetrics {
   errors: string[];
 }
 
+// Fase 6A - warnings operacionales estructurados (ver backend
+// app/models/schemas.py:OperationalWarning/OperationalWarningType).
+export type OperationalWarningType =
+  | "operational_loadability_warning"
+  | "delivery_sequence_conflict"
+  | "stacking_sequence_conflict"
+  | "sequence_cycle"
+  | "opening_configuration_limitation";
+
+export interface OperationalWarning {
+  type: OperationalWarningType;
+  message: string;
+  item_id: string | null;
+  blocking_item_id: string | null;
+  requested_delivery_sequence: number | null;
+  blocking_delivery_sequence: number | null;
+}
+
 export interface PackingResult {
   container: ContainerSpec;
   placed: PlacedPiece[];
@@ -254,6 +347,13 @@ export interface PackingResult {
   load_sequence: string[];
   unload_sequence: string[];
   load_sequence_warnings: string[];
+  /** Fase 6A: version estructurada de load_sequence_warnings -Delivery/
+   * Stacking Sequence conflicts, ciclos de dependencia y limitaciones de
+   * Loading Opening Type, ademas de loadability. */
+  operational_warnings: OperationalWarning[];
+  /** Fase 6A: id de pieza -> ids que deben descargarse antes que ella
+   * (soporte fisico + bloqueo lateral hacia la apertura de carga). */
+  blocked_by: Record<string, string[]>;
   reserved_zones: ReservedZone[];
   road_weight?: RoadWeightMetrics | null;
 }
@@ -372,4 +472,48 @@ export interface InitialWorkspaceConfig {
     defaultAllowTilt: boolean;
     defaultMaxTiltAngle: number | null;
   };
+}
+
+// ---------------------------------------------------------------------------
+// Fase 5D: Recent Plans & Persistence. Ver backend app/models/schemas.py
+// (PlanSummary/PlanDetailResponse) -mismos campos, camelCase donde el resto
+// del frontend ya usa camelCase (loadSpace/handlingRules), snake_case donde
+// se pasa tal cual al backend (plan_handling_rules).
+// ---------------------------------------------------------------------------
+
+/** Forma LIVIANA para pintar una tarjeta de Recent Plans en el Home -nunca
+ * incluye placed/unloaded completos (ver GET /api/plans). */
+export interface PlanSummary {
+  plan_id: string;
+  name: string;
+  load_type: string;
+  load_space_name: string;
+  total_items: number;
+  loaded_items: number;
+  unloaded_items: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Todo lo que Workspace (App.tsx) necesita para reconstruirse EXACTAMENTE
+ * como se guardo, sin volver a correr el optimizador -ver GET
+ * /api/plans/{id}. */
+export interface PlanDetail {
+  plan_id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  /** Fase 5D (correccion final): metadata PROPIA del plan -nunca inferida
+   * de result.placed[0]/unloaded[0].item_type. */
+  load_type: string;
+  result: PackingResult;
+  plan_handling_rules: PlanHandlingRules | null;
+  optimization_mode: OptimizationMode;
+  weight_balance_mode: WeightBalanceMode;
+  loading_anchor: LoadingAnchor;
+  clearance_mm: number;
+  enable_central_aisle: boolean;
+  aisle_width_mm: number;
+  container_id: string | null;
+  custom_load_space: CustomLoadSpaceRequestBody | null;
 }

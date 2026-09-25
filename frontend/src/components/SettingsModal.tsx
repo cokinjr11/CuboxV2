@@ -3,10 +3,12 @@ export type Theme = "dark" | "light";
 interface Props {
   theme: Theme;
   onThemeChange: (theme: Theme) => void;
+  blockExportsOnErrors: boolean;
+  onBlockExportsOnErrorsChange: (value: boolean) => void;
   onClose: () => void;
 }
 
-export function SettingsModal({ theme, onThemeChange, onClose }: Props) {
+export function SettingsModal({ theme, onThemeChange, blockExportsOnErrors, onBlockExportsOnErrorsChange, onClose }: Props) {
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-box" onClick={(e) => e.stopPropagation()}>
@@ -29,6 +31,25 @@ export function SettingsModal({ theme, onThemeChange, onClose }: Props) {
               title="Cambiar entre tema oscuro y claro"
             />
           </div>
+        </div>
+
+        <div className="settings-section">
+          <h3>Export & Reports</h3>
+          <div className="settings-row">
+            <span>Block exports when validation errors exist</span>
+            <input
+              type="checkbox"
+              className="toggle-switch"
+              checked={blockExportsOnErrors}
+              onChange={(e) => onBlockExportsOnErrorsChange(e.target.checked)}
+              title="Block exports when validation errors exist"
+            />
+          </div>
+          <p className="hint">
+            When enabled, Cubox prevents operational reports from being exported while blocking validation errors
+            remain. Turning it off does not fix or hide those errors -every export generated this way is still
+            clearly marked "NOT READY / EXPORTED WITH VALIDATION ERRORS" on its cover and on every page.
+          </p>
         </div>
 
         <div className="settings-section">

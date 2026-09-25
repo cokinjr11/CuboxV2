@@ -11,7 +11,11 @@ const VALID_COLOR = "#3ddc84";
 const INVALID_COLOR = "#ff4d4f";
 const SELECTED_COLOR = "#ff6b35";
 const LOCKED_EDGE_COLOR = "#e0b429";
-const GRAY_PAST_COLOR = "#8a8a8a";
+// Operational Guide Print Redesign v2, seccion 13/14: "blue-gray
+// translucent", NUNCA gris liso -mismo valor exacto que
+// backend/pdf_export.py:BLUE_GRAY_HEX (la leyenda de la portada del PDF
+// describe este color literal, no una aproximacion).
+const GRAY_PAST_COLOR = "#6c7f8f";
 const CURRENT_STEP_COLOR = "#ff6b35";
 const DIMMED_OPACITY = 0.15;
 
@@ -37,13 +41,28 @@ interface Props {
    * guias PDF). Default "past" (aparece normal) cuando no se esta mostrando
    * ninguna secuencia. */
   visualState: PieceVisualState;
-  /** Modo captura para las guias PDF (Loading/Unloading Guide): "past" pasa a
-   * gris/transparente y "future" se oculta por completo, en vez del
-   * tratamiento mas suave que usa el slider interactivo en vivo (donde "past"
-   * se ve normal -ya esta colocada, no hace falta apagarle el color- y solo
-   * "future" se atenua). Default false = comportamiento de la vista
-   * interactiva de siempre. */
+  /** Modo captura para las guias PDF/Guia interactiva (Loading/Unloading):
+   * un estado (segun `guideDirection`) pasa a gris/translucido y el otro se
+   * oculta por completo, en vez del tratamiento mas suave que usa el
+   * slider interactivo en vivo (donde "past" se ve normal -ya esta
+   * colocada, no hace falta apagarle el color- y solo "future" se atenua).
+   * Default false = comportamiento de la vista interactiva de siempre. */
   guideMode?: boolean;
+  /** Fase 6B, seccion 7 del pedido: CARGA y DESCARGA NO son simetricas.
+   * "load" (default): "past" (ya cargado) VISIBLE/translucido, "future"
+   * (todavia no) OCULTO. "unload": "past" (ya retirado) OCULTO, "future"
+   * (todavia dentro) VISIBLE/translucido. Solo tiene efecto cuando
+   * guideMode=true -la vista interactiva de siempre no distingue direccion. */
+  guideDirection?: "load" | "unload";
+  /** Operational Guide Print Redesign v2, seccion 17: SOLO true durante la
+   * captura de un snapshot para Loading/Unloading Guide PDF (nunca en la
+   * Guia interactiva del Workspace ni en la vista normal, que no deben
+   * cambiar -seccion 15 del pedido). A ese tamano de impresion, Code +
+   * Description + Group (2 lineas) se vuelve ilegible; la Description
+   * completa ya aparece en la tabla Step Content del PDF, asi que en
+   * printMode la etiqueta de la pieza se reduce a Code solamente. Default
+   * false = comportamiento de siempre (Workspace/Show Steps, sin cambios). */
+  printMode?: boolean;
   onSelect: (id: string) => void;
   onBeginDrag: (
     mode: DragMode,
@@ -70,10 +89,23 @@ export function PieceMesh({
   showLabels,
   visualState,
   guideMode = false,
+  guideDirection = "load",
+  printMode = false,
   onSelect,
   onBeginDrag,
 }: Props) {
-  if (visualState === "future" && guideMode && !dragOverride) return null;
+  // Fase 6B: en descarga se invierte cual extremo se oculta y cual queda
+  // translucido -ver comentario de `guideDirection` en la interfaz Props.
+  // Fase 6C.1 (pedido explicito del usuario): la captura de PDF vuelve a
+  // usar EXACTAMENTE esta misma logica acumulada -ya no hay una variante
+  // "solo el step actual" para reportCaptureMode (removida, ver historial
+  // de Fase 6B.2/6B.3 para el intento anterior). El usuario opto
+  // explicitamente por el historico acumulado en gris translucido pese al
+  // riesgo conocido de saturacion visual en planes largos (Step 13+).
+  const hiddenGuideState: PieceVisualState = guideDirection === "unload" ? "past" : "future";
+  const subduedGuideState: PieceVisualState = guideDirection === "unload" ? "future" : "past";
+
+  if (visualState === hiddenGuideState && guideMode && !dragOverride) return null;
 
   const colorKey =
     colorBy === "system"
@@ -117,7 +149,7 @@ export function PieceMesh({
   let color = dragOverride ? (dragOverride.valid ? VALID_COLOR : INVALID_COLOR) : selected ? SELECTED_COLOR : baseColor;
   if (!dragOverride && !selected) {
     if (visualState === "current") color = CURRENT_STEP_COLOR;
-    else if (visualState === "past" && guideMode) color = GRAY_PAST_COLOR;
+    else if (visualState === subduedGuideState && guideMode) color = GRAY_PAST_COLOR;
   }
   const edgeColor = dragOverride
     ? "#ffffff"
@@ -126,8 +158,13 @@ export function PieceMesh({
       : selected
         ? "#ffffff"
         : "#1a1a1a";
-  const isDimmedFuture = visualState === "future" && !dragOverride;
-  const opacity = isDimmedFuture ? DIMMED_OPACITY : visualState === "past" && guideMode ? 0.5 : 0.82;
+  // Fase 6B: el atenuado fuerte (0.15, "future" en la vista interactiva de
+  // siempre) es EXCLUSIVO del modo no-guia -en modo guia, guideDirection ya
+  // decide que estado se oculta del todo (return null, arriba) y cual queda
+  // translucido a 0.5 (justo abajo); mezclar ambas reglas aqui haria que
+  // "future" en descarga (que debe quedar VISIBLE) se atenuara de mas.
+  const isDimmedFuture = visualState === "future" && !guideMode && !dragOverride;
+  const opacity = isDimmedFuture ? DIMMED_OPACITY : visualState === subduedGuideState && guideMode ? 0.5 : 0.82;
 
   function handlePointerDown(e: DragPointerEvent) {
     e.stopPropagation();
@@ -171,11 +208,14 @@ export function PieceMesh({
   // El numero de secuencia tiene su propia jerarquia visual (ver mas abajo),
   // no comparte tamano/posicion con este bloque.
   const footprintSize = Math.min(faceWidth, geomDz) * SCENE_SCALE;
-  const primaryFontSize = Math.min(0.15, Math.max(0.06, footprintSize * 0.2));
+  // Seccion 17 del pedido: en printMode no hay segunda linea que competir
+  // por espacio -Code puede crecer un poco (1.2x) y seguir siendo el unico
+  // dato en la cara, mas legible a la distancia de un shot de guia completa.
+  const primaryFontSize = Math.min(0.15, Math.max(0.06, footprintSize * 0.2)) * (printMode ? 1.2 : 1);
   const secondaryFontSize = primaryFontSize * 0.75;
   const maxWidth = faceWidth * SCENE_SCALE * 0.88;
 
-  const secondaryLines = [piece.description, piece.group].filter(Boolean);
+  const secondaryLines = printMode ? [] : [piece.description, piece.group].filter(Boolean);
   const secondaryText = secondaryLines.join("\n");
 
   const { text: labelTextColor, outline: labelOutlineColor } = pickLabelColors(color);

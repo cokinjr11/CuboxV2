@@ -56,3 +56,38 @@ def test_export_workbook_excludes_boxes_inside_for_box_plan():
     wb = load_workbook(io.BytesIO(xlsx_bytes))
     assert "Boxes Inside" not in _headers(wb["Packing List"])
     assert "Boxes Inside" not in _headers(wb["Unloaded Items"])
+
+
+def test_export_workbook_summary_reports_valid_operational_sequence_when_no_warnings():
+    result = _build_result(ItemType.BOX, Dimensions3D(length=600, width=400, height=300), 25)
+    xlsx_bytes = build_export_workbook(result)
+    wb = load_workbook(io.BytesIO(xlsx_bytes))
+    summary_rows = {row[0].value: row[1].value for row in wb["Summary"].iter_rows()}
+    assert summary_rows["Operational Sequence"] == "Valid"
+    assert "Sequence Warnings" not in wb.sheetnames
+
+
+def test_export_workbook_adds_sequence_warnings_sheet_when_warnings_exist():
+    from app.models.schemas import OperationalWarning, OperationalWarningType
+
+    result = _build_result(ItemType.BOX, Dimensions3D(length=600, width=400, height=300), 25)
+    result.operational_warnings = [
+        OperationalWarning(
+            type=OperationalWarningType.DELIVERY_SEQUENCE_CONFLICT,
+            message="P001 is scheduled for Delivery Sequence 1 but is blocked by P002 (Delivery Sequence 3).",
+            item_id="P001",
+            blocking_item_id="P002",
+            requested_delivery_sequence=1,
+            blocking_delivery_sequence=3,
+        )
+    ]
+    xlsx_bytes = build_export_workbook(result)
+    wb = load_workbook(io.BytesIO(xlsx_bytes))
+    summary_rows = {row[0].value: row[1].value for row in wb["Summary"].iter_rows()}
+    assert summary_rows["Operational Sequence"] == "1 Warning(s)"
+    assert "Sequence Warnings" in wb.sheetnames
+    warnings_rows = list(wb["Sequence Warnings"].iter_rows(values_only=True))
+    assert warnings_rows[0] == ("Type", "Item", "Blocking Item", "Message")
+    assert warnings_rows[1][0] == "delivery_sequence_conflict"
+    assert warnings_rows[1][1] == "P001"
+    assert warnings_rows[1][2] == "P002"

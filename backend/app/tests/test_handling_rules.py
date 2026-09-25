@@ -298,4 +298,7 @@ def test_packing_never_stacks_on_a_plan_inherited_item_with_an_explicit_no_overr
     # valido -no hay ninguna pieza apoyada donde no deberia.
     validate_r = client.post("/api/report/validate")
     assert validate_r.status_code == 200
-    assert validate_r.json() == {"valid": True, "errors": []}
+    validate_body = validate_r.json()
+    assert validate_body["valid"] is True
+    assert validate_body["errors"] == []
+    assert validate_body["warnings"] == []

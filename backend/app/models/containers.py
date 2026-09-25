@@ -90,7 +90,12 @@ def build_custom_load_space(
     id generado solo necesita ser unico dentro del mismo request/response.
 
     road_weight_config es opcional (Fase 2B): None (default) preserva el
-    comportamiento de Fase 2A -sin distribucion de peso longitudinal."""
+    comportamiento de Fase 2A -sin distribucion de peso longitudinal.
+
+    loading_opening_type=REAR explicito (Fase 6A Final Product Decision): no
+    es solo el default del schema -se fija aca a proposito para que quede
+    claro que Truck/Trailer/Custom Space SIEMPRE resuelven como rear-loading,
+    igual que el catalogo (ver CONTAINER_CATALOG arriba)."""
     return LoadSpaceSpec(
         id=f"custom-{uuid4().hex[:8]}",
         name=name,
@@ -100,4 +105,5 @@ def build_custom_load_space(
         height=height,
         max_weight=max_weight,
         road_weight_config=road_weight_config,
+        loading_opening_type=LoadingOpeningType.REAR,
     )

@@ -143,6 +143,70 @@
   padding: 18px;
 }
 
+/* Fase 5D: Recent Plans -tarjetas reales en vez del placeholder vacio. */
+
+.recent-plans-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.recent-plan-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--color-bg-panel);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  text-align: left;
+}
+
+.recent-plan-card-main {
+  min-width: 0;
+}
+
+.recent-plan-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recent-plan-card-meta {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  margin-top: 2px;
+}
+
+.recent-plan-card-unloaded {
+  color: var(--color-danger);
+}
+
+.recent-plan-card-modified {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  margin-top: 4px;
+}
+
+.recent-plan-card-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.recent-plan-card-delete {
+  color: var(--color-danger);
+}
+
 .home-footer {
   padding: 16px 32px;
   text-align: center;

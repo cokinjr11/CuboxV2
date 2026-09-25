@@ -9,7 +9,7 @@ interface Props {
 const DIMENSION_LABEL: Record<Exclude<ColorByMode, "default">, string> = {
   group: "Group",
   system: "System",
-  priority: "Priority",
+  priority: "Load Priority",
 };
 
 export function ColorLegend({ placed, colorBy }: Props) {

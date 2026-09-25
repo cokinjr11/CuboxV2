@@ -5,12 +5,17 @@ Code, Description, Width, Height, Thickness, Weight, Quantity, System,
 Group, Stackable, Priority. MaxStackWeight y DeliverySequence son opcionales
 (vacio = sin limite / sin definir) - un Excel de V1/V2 sin esas columnas
 sigue importando igual.
+
+Load Organization Model Cleanup: "Priority" (columna, int crudo) tambien
+acepta el alias "Load Priority" y valores de texto High/Normal/Low -ver
+core/load_priority.py. Ningun archivo viejo con numeros deja de importar.
 """
 
 import io
 
 from openpyxl import load_workbook
 
+from app.core.load_priority import parse_load_priority_cell
 from app.models.schemas import WindowItem
 
 REQUIRED_COLUMNS = ["code", "width", "height", "thickness", "weight", "quantity"]
@@ -27,12 +32,28 @@ COLUMN_ALIASES = {
     "group": "group",
     "stackable": "stackable",
     "priority": "priority",
+    "load priority": "priority",
+    "loadpriority": "priority",
     "maxstackweight": "max_stack_weight",
     "max_stack_weight": "max_stack_weight",
     "deliverysequence": "delivery_sequence",
     "delivery_sequence": "delivery_sequence",
     "stop": "delivery_sequence",
 }
+
+
+def _parse_priority(value) -> int:
+    """Vacio = 0 (medio, sin cambios de siempre). Acepta High/Normal/Low
+    (Load Organization Model Cleanup) o -compatibilidad con archivos
+    viejos- un entero crudo. Cualquier otra cosa sigue siendo un error duro,
+    mismo criterio de siempre para este importador legacy (nunca silenciaba
+    un valor invalido convirtiendolo en 0)."""
+    if value in (None, ""):
+        return 0
+    parsed = parse_load_priority_cell(value)
+    if parsed is None:
+        raise ValueError(f"Priority/Load Priority invalido: {value!r}")
+    return parsed
 
 TRUE_VALUES = {"yes", "y", "true", "1", "si", "sí", "x"}
 
@@ -63,7 +84,7 @@ def _parse_row(headers: list[str], row: tuple, row_number: int) -> WindowItem:
         system=str(values.get("system") or "").strip(),
         group=str(values.get("group") or "").strip(),
         stackable=_parse_stackable(values.get("stackable")),
-        priority=int(values.get("priority") or 0),
+        priority=_parse_priority(values.get("priority")),
         max_stack_weight=float(values["max_stack_weight"]) if values.get("max_stack_weight") not in (None, "") else None,
         delivery_sequence=int(values["delivery_sequence"]) if values.get("delivery_sequence") not in (None, "") else None,
     )

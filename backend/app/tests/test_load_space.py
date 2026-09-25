@@ -361,4 +361,7 @@ def test_manual_move_and_final_validation_use_the_active_custom_load_space():
     # custom Load Space, sin errores para el layout actual.
     validate_r = client.post("/api/report/validate")
     assert validate_r.status_code == 200
-    assert validate_r.json() == {"valid": True, "errors": []}
+    validate_body = validate_r.json()
+    assert validate_body["valid"] is True
+    assert validate_body["errors"] == []
+    assert validate_body["warnings"] == []

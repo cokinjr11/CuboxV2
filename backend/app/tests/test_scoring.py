@@ -188,6 +188,8 @@ def test_weight_balance_ignore_sets_balance_weight_to_zero():
 def test_score_breakdown_has_one_entry_per_component_as_percentage():
     lopsided, _ = _lopsided_and_balanced()
     breakdown = score_breakdown(lopsided, OptimizationMode.BEST_SPACE)
-    assert set(breakdown.keys()) == {"loaded", "priority", "volume", "floor", "grouping", "accessibility", "balance"}
+    assert set(breakdown.keys()) == {
+        "loaded", "priority", "volume", "floor", "grouping", "delivery", "accessibility", "balance",
+    }
     for value in breakdown.values():
         assert 0 <= value <= 100

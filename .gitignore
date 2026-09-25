@@ -3,6 +3,9 @@ backend/__pycache__/
 backend/**/__pycache__/
 backend/.pytest_cache/
 
+# Fase 5D: base de datos SQLite de Load Plans persistentes (runtime, nunca commitear)
+backend/data/
+
 frontend/node_modules/
 frontend/dist/
 

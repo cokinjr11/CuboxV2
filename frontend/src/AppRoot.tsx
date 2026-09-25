@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import App from "./App";
+import { getPlan } from "./api/client";
 import { Home } from "./components/Home";
 import { LoadPlanWizard } from "./components/wizard/LoadPlanWizard";
+import { extractErrorMessage } from "./utils/errors";
 import "./wizard.css";
-import type { InitialWorkspaceConfig } from "./types";
+import type { InitialWorkspaceConfig, PlanDetail } from "./types";
 import type { LoadPlanDraft } from "./wizardTypes";
 
 // CUBOX 2.0 Fase 4: HOME / SETUP (wizard) / WORKSPACE como un simple estado
@@ -61,6 +63,14 @@ function AppRoot() {
   // para que una fase futura pueda conectar "Create Load Plan" con
   // Optimize de punta a punta -ver Fase 4, seccion 24.
   const [completedDraft, setCompletedDraft] = useState<LoadPlanDraft | null>(null);
+  // Fase 5D: cuando el usuario abre un plan guardado desde Recent Plans, el
+  // Workspace se hidrata DIRECTO desde esta respuesta -nunca desde
+  // completedDraft/buildInitialWorkspace (eso solo aplica al flujo del
+  // wizard). Mutuamente excluyente con completedDraft: cualquier entrada
+  // nueva a "wizard" u "Open Legacy Workspace" limpia esto explicitamente
+  // (seccion 36 del pedido: New Load Plan nunca hereda un plan anterior).
+  const [openedPlan, setOpenedPlan] = useState<PlanDetail | null>(null);
+  const [openPlanError, setOpenPlanError] = useState("");
 
   useEffect(() => {
     // App.tsx sincroniza data-theme en su propio useEffect, pero solo se
@@ -71,16 +81,47 @@ function AppRoot() {
   }, []);
 
   function exitToHome() {
-    // Sin persistencia todavia (Fase 5, seccion 35): una confirmacion simple
-    // alcanza -no hace falta un sistema de "unsaved changes" completo.
-    if (window.confirm("Leave the current workspace? Unsaved changes will be lost.")) {
+    // Fase 5D: el Workspace autoguarda solos sus propios cambios (ver
+    // App.tsx) cuando hay un plan_id activo -la confirmacion de "se pierde
+    // el trabajo" solo importa de verdad para "Open Legacy Workspace" (sin
+    // persistencia, seccion 12 del pedido: fuera de alcance de esta fase) o
+    // para un plan que todavia no llego a su primer Optimize (sin plan_id
+    // todavia). Mantenerla simple para ambos casos evita un sistema de
+    // "unsaved changes" mas complejo.
+    if (window.confirm("Leave the current workspace?")) {
       setCompletedDraft(null);
+      setOpenedPlan(null);
       setMode("home");
     }
   }
 
+  async function openPlan(planId: string) {
+    setOpenPlanError("");
+    try {
+      const detail = await getPlan(planId);
+      setCompletedDraft(null);
+      setOpenedPlan(detail);
+      setMode("workspace");
+    } catch (e) {
+      setOpenPlanError(extractErrorMessage(e, "No se pudo abrir el Load Plan."));
+    }
+  }
+
   if (mode === "home") {
-    return <Home onNewLoadPlan={() => setMode("wizard")} onOpenLegacyWorkspace={() => setMode("workspace")} />;
+    return (
+      <Home
+        onNewLoadPlan={() => {
+          setOpenedPlan(null);
+          setMode("wizard");
+        }}
+        onOpenLegacyWorkspace={() => {
+          setOpenedPlan(null);
+          setMode("workspace");
+        }}
+        onOpenPlan={openPlan}
+        openPlanError={openPlanError}
+      />
+    );
   }
 
   if (mode === "wizard") {
@@ -88,6 +129,7 @@ function AppRoot() {
       <LoadPlanWizard
         onCancel={() => setMode("home")}
         onComplete={(draft) => {
+          setOpenedPlan(null);
           setCompletedDraft(draft);
           setMode("workspace");
         }}
@@ -95,12 +137,20 @@ function AppRoot() {
     );
   }
 
-  // "workspace": el LoadPlanWizard ya valido que el import sea is_valid y
-  // que el Load Space este completo, asi que buildInitialWorkspace siempre
-  // devuelve un config real en ese caso. Si se llego aca via "Open Legacy
-  // Workspace" (sin draft), devuelve undefined -y <App/> arranca con su
+  // "workspace": si se abrio un plan guardado (openedPlan), tiene prioridad
+  // -restaura el Workspace EXACTO sin pasar por el wizard. Si no, el
+  // LoadPlanWizard ya valido que el import sea is_valid y que el Load Space
+  // este completo, asi que buildInitialWorkspace siempre devuelve un config
+  // real en ese caso. Si se llego aca via "Open Legacy Workspace" (sin
+  // draft ni plan abierto), ambos son undefined -y <App/> arranca con su
   // comportamiento de siempre.
-  return <App initialWorkspace={buildInitialWorkspace(completedDraft)} onExitToHome={exitToHome} />;
+  return (
+    <App
+      initialWorkspace={buildInitialWorkspace(completedDraft)}
+      restoredPlan={openedPlan ?? undefined}
+      onExitToHome={exitToHome}
+    />
+  );
 }
 
 export default AppRoot;

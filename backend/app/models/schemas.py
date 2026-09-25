@@ -225,11 +225,26 @@ class LoadItem(BaseModel):
     weight: float = Field(gt=0, description="kg, peso unitario")
     quantity: int = Field(gt=0)
     system: str = ""
-    group: str = ""
+    group: str = Field(
+        default="",
+        description="Etiqueta de agrupamiento libre (proyecto/obra/cliente/grupo de entrega). NO implica orden de "
+        "descarga -eso es exclusivamente Delivery Sequence, ver mas abajo. No confundir con System.",
+    )
     stackable: bool = True
-    priority: int = 0
+    priority: int = Field(
+        default=0,
+        description="Load Priority (nombre user-facing; el campo interno se mantiene sin cambios por "
+        "compatibilidad). 1=Highest...5=Lowest, 0/fuera de rango=Normal/medio (ver core/load_priority.py y "
+        "core/scoring.py:_priority_weight). Afecta SOLO que items se prefieren admitir/cargar cuando no entra "
+        "todo -nunca decide posicion fisica ni orden de descarga (eso es Delivery Sequence).",
+    )
     max_stack_weight: float | None = Field(default=None, description="kg, None = sin limite")
-    delivery_sequence: int | None = Field(default=None, description="orden de entrega/parada; None = sin definir")
+    delivery_sequence: int | None = Field(
+        default=None,
+        description="Orden/parada de entrega deseado; menor numero = entrega mas temprana. None = sin preferencia "
+        "definida (NUNCA se interpreta como 0). Varias piezas pueden compartir el mismo valor (misma parada) -no "
+        "es un orden unico por item. Independiente de Group y de Load Priority.",
+    )
     boxes_inside: int | None = Field(
         default=None,
         description="Informativo (trazabilidad/inventario): cuantas cajas/unidades individuales contiene este Load "
@@ -308,8 +323,15 @@ class LoadSpaceType(str, Enum):
 
 
 class LoadingOpeningType(str, Enum):
-    """Por donde se accede al espacio de carga. Opcional: si no se conoce el
-    dato real, se deja en None -nunca se inventa (ver LoadSpaceSpec)."""
+    """Por donde se accede al espacio de carga. Fase 6A Final Product
+    Decision: TODOS los Load Space de Cubox se consideran rear-loading -REAR
+    es el UNICO comportamiento activo del producto (Container/Truck/
+    Trailer/Custom siempre lo resuelven asi, ver models/containers.py). SIDE/
+    TOP/MULTIPLE se conservan en el enum solo por compatibilidad futura -no
+    hay forma de que el producto construya hoy un LoadSpaceSpec con esos
+    valores; el motor de secuencia (core/sequence.py) los sigue soportando
+    si alguna vez reaparecen (p.ej. un plan persistido muy viejo), pero
+    ningun flujo actual los genera."""
 
     REAR = "rear"
     SIDE = "side"
@@ -376,7 +398,10 @@ class LoadSpaceSpec(BaseModel):
     height: float = Field(description="mm, eje Z interno")
     max_weight: float = Field(description="kg, peso maximo de carga")
     loading_opening_type: LoadingOpeningType | None = Field(
-        default=None, description="None = sin dato conocido; no se inventa"
+        default=LoadingOpeningType.REAR,
+        description="Fase 6A Final Product Decision: siempre REAR -unico comportamiento activo del "
+        "producto, no configurable por el usuario. Sigue aceptando None por compatibilidad con planes "
+        "persistidos de antes de esta decision (se trata igual que REAR, sin warning de limitacion).",
     )
     rear_opening_width: float | None = Field(default=None, description="mm; None = sin dato conocido")
     rear_opening_height: float | None = Field(default=None, description="mm; None = sin dato conocido")
@@ -434,9 +459,18 @@ class CustomLoadSpaceRequest(BaseModel):
 
 
 class OptimizationMode(str, Enum):
+    """PRIORITIZE_DELIVERY (Fase 6A.1): ordena la colocacion para que
+    Delivery Sequence mas bajo (entrega mas temprana) quede cerca de la
+    apertura de carga y Delivery Sequence mas alto (entrega mas tardia)
+    quede en el fondo -evita que el Sequence Engine (Fase 6A) reporte
+    decenas de DELIVERY_SEQUENCE_CONFLICT por un modo que nunca intento
+    respetar Delivery Sequence en primer lugar (ver
+    core/strategies.py:_delivery_key y core/scoring.py)."""
+
     BEST_SPACE = "best_space"
     KEEP_GROUPS = "keep_groups"
     KEEP_SYSTEMS = "keep_systems"
+    PRIORITIZE_DELIVERY = "prioritize_delivery"
 
 
 class LoadingAnchor(str, Enum):
@@ -454,17 +488,58 @@ class WeightBalanceMode(str, Enum):
     IMPORTANT = "important"
 
 
+class OperationalWarningType(str, Enum):
+    """Fase 6A, seccion 28: tipos estructurados de warning operacional -evita
+    que cada consumidor (UI, reportes) tenga que parsear texto libre para
+    saber que clase de conflicto es."""
+
+    OPERATIONAL_LOADABILITY_WARNING = "operational_loadability_warning"
+    DELIVERY_SEQUENCE_CONFLICT = "delivery_sequence_conflict"
+    STACKING_SEQUENCE_CONFLICT = "stacking_sequence_conflict"
+    SEQUENCE_CYCLE = "sequence_cycle"
+    OPENING_CONFIGURATION_LIMITATION = "opening_configuration_limitation"
+
+
+class OperationalWarning(BaseModel):
+    """Fase 6A, seccion 29: un warning util identifica pieza afectada, pieza
+    bloqueante (si aplica) y las Delivery Sequence en conflicto -no solo un
+    mensaje de texto. `message` sigue siendo human-readable (se usa tal cual
+    en load_sequence_warnings/reportes) para no duplicar el texto en cada
+    consumidor."""
+
+    type: OperationalWarningType
+    message: str
+    item_id: str | None = None
+    blocking_item_id: str | None = None
+    requested_delivery_sequence: int | None = None
+    blocking_delivery_sequence: int | None = None
+
+
 class PlacedPiece(BaseModel):
     id: str
     code: str
     description: str = ""
     system: str = ""
-    group: str = ""
+    group: str = Field(
+        default="",
+        description="Load Organization Model Cleanup: agrupamiento de negocio (proyecto/obra/cliente/grupo de "
+        "entrega), copiado tal cual de LoadItem.group. NO implica orden de descarga -ver LoadItem.group.",
+    )
     weight: float
     stackable: bool
-    priority: int
+    priority: int = Field(
+        default=0,
+        description="Load Priority (nombre user-facing), copiado tal cual de LoadItem.priority -ver "
+        "core/load_priority.py. Afecta admision/packing bajo restriccion de capacidad, nunca posicion fisica final.",
+    )
     max_stack_weight: float | None = None
-    delivery_sequence: int | None = None
+    delivery_sequence: int | None = Field(
+        default=None,
+        description="Orden/parada de entrega deseado, copiado tal cual de LoadItem.delivery_sequence -ver "
+        "core/sequence.py. None = sin preferencia (nunca 0). No determina por si solo el orden fisico final: "
+        "eso lo decide la geometria + accesibilidad (compute_unload_dependencies), Delivery Sequence es solo "
+        "el desempate SOFT entre piezas ya listas.",
+    )
     boxes_inside: int | None = None
     locked: bool = False
     x: float
@@ -550,11 +625,13 @@ class UnloadedItem(BaseModel):
     dimensions: Dimensions3D
     weight: float
     system: str = ""
-    group: str = ""
+    group: str = Field(default="", description="Ver LoadItem.group -copiado tal cual, no implica orden de descarga.")
     stackable: bool = True
-    priority: int = 0
+    priority: int = Field(default=0, description="Load Priority (nombre user-facing) -ver core/load_priority.py.")
     max_stack_weight: float | None = None
-    delivery_sequence: int | None = None
+    delivery_sequence: int | None = Field(
+        default=None, description="Ver LoadItem.delivery_sequence -None = sin preferencia, nunca 0."
+    )
     boxes_inside: int | None = None
     reason: str
     reason_code: str
@@ -647,7 +724,15 @@ class PackingResult(BaseModel):
     unload_sequence: list[str] = []
     load_sequence_warnings: list[str] = Field(
         default=[],
-        description="Operational loadability warnings: piezas sin ninguna referencia fisica (piso/fondo/lateral/pieza ya cargada) en el punto en que la secuencia las carga.",
+        description="Fase 6A: proyeccion en texto plano de operational_warnings (mismo orden), mantenida por compatibilidad con Excel y consumidores existentes. Ver operational_warnings para el detalle estructurado.",
+    )
+    operational_warnings: list[OperationalWarning] = Field(
+        default=[],
+        description="Fase 6A: warnings operacionales estructurados -loadability, Delivery Sequence conflicts, Stacking Sequence conflicts, ciclos de dependencia y limitaciones de Loading Opening Type.",
+    )
+    blocked_by: dict[str, list[str]] = Field(
+        default={},
+        description="Fase 6A: id de pieza -> ids que deben descargarse antes que ella (soporte fisico + bloqueo lateral hacia la apertura de carga), segun la geometria final del plan.",
     )
     reserved_zones: list[ReservedZoneOut] = []
     road_weight: RoadWeightMetrics | None = Field(
@@ -819,13 +904,30 @@ class ContainerReportRequest(BaseModel):
     overview_image_png_base64: str | None = Field(
         default=None, description="PNG del snapshot 3D en base64; requerido si include_overview_image=True"
     )
+    allow_export_with_errors: bool = Field(
+        default=False,
+        description="Configurable Export Validation Override: si True y el plan esta NOT_READY (errores "
+        "bloqueantes), el export procede igual en vez de devolver 422 -el documento generado se marca "
+        "explicitamente como 'EXPORTED WITH VALIDATION ERRORS' (nunca se oculta ni se reinterpreta el estado). "
+        "Reflejo backend-autoritativo del toggle 'Block exports when validation errors exist' de Settings -ver "
+        "routes.py:_resolve_export_validation.",
+    )
 
 
 class GuideReportRequest(BaseModel):
     meta: ReportMetadata = ReportMetadata()
     step_mode: StepMode = StepMode.AUTOMATIC
     pieces_per_step: int | None = Field(default=None, description="requerido si step_mode == MANUAL")
+    allow_export_with_errors: bool = Field(
+        default=False, description="Ver ContainerReportRequest.allow_export_with_errors -mismo contrato."
+    )
     step_images_png_base64: list[str] = Field(default_factory=list, description="un PNG por paso, en el mismo orden")
+    groups: list[str] | None = Field(
+        default=None,
+        description="Load Organization Model Cleanup: si se define, filtra la Unloading Guide a solo estos "
+        "Groups (Group Unloading Guide). None = Full Unloading Guide (comportamiento de siempre, todo el plan). "
+        "Nunca cambia el orden fisico ni recalcula dependencias -solo filtra los pasos ya resueltos.",
+    )
 
 
 class ReportDirection(str, Enum):
@@ -839,10 +941,228 @@ class ReportStepsRequest(BaseModel):
     pieces_per_step: int | None = Field(default=None, description="requerido si step_mode == MANUAL")
 
 
+class UnloadStepDeliveryInfo(BaseModel):
+    """Fase 6B: anotacion de Delivery Sequence de un paso de DESCARGA ya
+    resuelto -NUNCA cambia el orden de `steps`, solo lo describe. Ver
+    core/sequence.py:annotate_unload_steps_with_delivery."""
+
+    delivery_sequences: list[int] = Field(
+        default=[], description="Valores DISTINTOS de Delivery Sequence presentes en este paso, ordenados; [] si ninguna pieza del paso tiene el campo definido."
+    )
+    is_mixed: bool = Field(
+        default=False, description="True si el paso tiene mas de un valor DISTINTO de Delivery Sequence -seccion 15 del pedido: nunca se inventa un numero unico para este caso."
+    )
+    conflict_messages: list[str] = Field(
+        default=[],
+        description="Mensajes de PackingResult.operational_warnings (DELIVERY_SEQUENCE_CONFLICT/STACKING_SEQUENCE_CONFLICT) que involucran a alguna pieza de este paso -texto reusado tal cual, nunca generado de nuevo.",
+    )
+    conflict_types: list[OperationalWarningType] = Field(
+        default=[],
+        description=(
+            "Fase 6B.3: mismo orden/longitud que conflict_messages -el tipo de "
+            "cada mensaje, para poder resumirlos por categoria (ej. 'Loading "
+            "Guide PDF' -> 'Delivery blocking conflicts' x5) sin tener que "
+            "parsear el texto. No agrega/quita ningun warning, solo conserva "
+            "el `.type` que ya traia el OperationalWarning original."
+        ),
+    )
+
+
+class UnloadDeliverySection(BaseModel):
+    """Fase 6B, seccion 14: agrupacion de pasos de descarga CONTIGUOS que
+    comparten la misma anotacion de Delivery Sequence -solo para mostrar
+    encabezados "DELIVERY N" legibles. Nunca reordena `steps`; `step_indices`
+    siempre es un rango contiguo en el orden fisico original."""
+
+    label: str | None = Field(
+        default=None,
+        description="None = sin encabezado (ningun item del rango tiene Delivery Sequence). 'DELIVERY {n}' para una seccion limpia, o una etiqueta 'mixed' si el rango mezcla valores distintos.",
+    )
+    step_indices: list[int] = Field(description="Indices (0-based) dentro de `steps`, siempre un rango contiguo.")
+
+
 class ReportStepsResponse(BaseModel):
     steps: list[list[str]]
+    unload_step_info: list[UnloadStepDeliveryInfo] | None = Field(
+        default=None, description="Fase 6B: solo presente cuando direction=UNLOAD; misma longitud que `steps`."
+    )
+    delivery_sections: list[UnloadDeliverySection] | None = Field(
+        default=None, description="Fase 6B: solo presente cuando direction=UNLOAD."
+    )
+
+
+class ValidationCategory(str, Enum):
+    """Fase 6C: categorias ESTABLES y CHICAS a proposito (seccion 5 del
+    pedido: "do not create dozens of tiny categories") -cada issue de
+    final_validation.py/operational_warnings/unloaded items se etiqueta con
+    una de estas, nunca se infiere parseando el texto del mensaje. Reserved
+    Zone vive bajo LOAD_SPACE (seccion 5); Tilt legacy vive bajo ORIENTATION
+    (seccion 37, nunca reaparece como categoria propia -eso reintroduciria
+    Tilt en la UI, que sigue deshabilitado)."""
+
+    DATA_INTEGRITY = "data_integrity"
+    LOAD_SPACE = "load_space"
+    COLLISION_CLEARANCE = "collision_clearance"
+    SUPPORT_STABILITY = "support_stability"
+    ORIENTATION = "orientation"
+    STACK_WEIGHT = "stack_weight"
+    PAYLOAD = "payload"
+    ROAD_WEIGHT = "road_weight"
+    OPERATIONAL_SEQUENCE = "operational_sequence"
+    DELIVERY_SEQUENCE = "delivery_sequence"
+    UNLOADED_ITEMS = "unloaded_items"
+
+
+class ValidationSeverity(str, Enum):
+    ERROR = "error"
+    WARNING = "warning"
+
+
+class ValidationIssue(BaseModel):
+    """Fase 6C, seccion 4 del pedido: metadata MINIMA sobre un mensaje que
+    final_validation.py/operational_warnings ya generaba -nunca una regla
+    nueva, solo la categoria/severidad/item_id que ya se conocian en el
+    momento en que el mensaje se armo. `message` es exactamente el mismo
+    texto que ya devolvia validate_for_export()/state.operational_warnings,
+    nunca reescrito."""
+
+    category: ValidationCategory
+    severity: ValidationSeverity
+    message: str
+    item_id: str | None = None
+
+
+class CategoryStatusValue(str, Enum):
+    PASS = "pass"
+    WARNING = "warning"
+    ERROR = "error"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class CategoryStatus(BaseModel):
+    category: ValidationCategory
+    status: CategoryStatusValue
+    count: int = 0
+
+
+class PlanValidationStatus(str, Enum):
+    READY = "ready"
+    READY_WITH_WARNINGS = "ready_with_warnings"
+    NOT_READY = "not_ready"
 
 
 class ReportValidationResponse(BaseModel):
+    """Fase 6A: `valid`/`errors`/`warnings` -SIN CAMBIOS de significado,
+    cualquier caller viejo (el preflight de handleGenerateReport, por
+    ejemplo) sigue funcionando exactamente igual. Fase 6C: agrega
+    `status`/`error_count`/`warning_count`/`unloaded_count`/`categories`/
+    `error_issues`/`warning_issues` de forma ADITIVA -mismo aggregador
+    (core/final_validation.py:build_plan_validation_result) alimenta tanto
+    el preflight de reportes como el nuevo panel Plan Validation del
+    Workspace, nunca dos calculos de "listo para exportar" independientes."""
+
     valid: bool
     errors: list[str] = []
+    warnings: list[str] = Field(
+        default=[],
+        description="Fase 6A, seccion 35: warnings operacionales NO bloqueantes (Delivery Sequence/Stacking Sequence conflicts, limitaciones de Loading Opening Type) -no impiden exportar, pero no deben quedar ocultos antes de generar un reporte.",
+    )
+    status: PlanValidationStatus = PlanValidationStatus.READY
+    error_count: int = 0
+    warning_count: int = 0
+    unloaded_count: int = 0
+    categories: list[CategoryStatus] = []
+    error_issues: list[ValidationIssue] = []
+    warning_issues: list[ValidationIssue] = []
+
+
+# ---------------------------------------------------------------------------
+# Fase 5D: Recent Plans & Persistence. Ver core/plan_store.py (repositorio
+# SQLite) y core/plan_service.py (traduccion hacia/desde estos modelos).
+# ---------------------------------------------------------------------------
+
+
+class CreatePlanRequest(PackRequest):
+    """Igual que PackRequest (seccion 12 del pedido: crear un Load Plan
+    corre exactamente la misma optimizacion que /api/pack) mas un nombre
+    opcional -None usa un nombre por defecto (core/plan_service.py:
+    default_plan_name)."""
+
+    name: str | None = Field(default=None, min_length=1)
+
+
+class CreatePlanResponse(BaseModel):
+    plan_id: str
+    name: str
+    best: PackingResult
+    alternatives: list[AlternativeSolution]
+
+
+class PlanSummary(BaseModel):
+    """Fase 5D, seccion 38 del pedido: forma LIVIANA para listar Recent
+    Plans -nunca placed/unloaded completos, solo lo que una tarjeta
+    necesita mostrar."""
+
+    plan_id: str
+    name: str
+    load_type: str
+    load_space_name: str
+    total_items: int
+    loaded_items: int
+    unloaded_items: int
+    created_at: str
+    updated_at: str
+
+
+class PlanDetailResponse(BaseModel):
+    """Fase 5D, seccion 13 del pedido: todo lo que el frontend necesita
+    para reconstruir el Workspace exactamente como se guardo, SIN volver a
+    correr el optimizador -`result` ya trae placed/unloaded/metrics/
+    secuencias/road_weight recalculados frescos (nunca desde una cache
+    persistida, ver plan_service.py), y el resto de los campos son la
+    configuracion activa que el frontend necesita para poblar sus propios
+    estados (Optimize Remaining, Handling Rules, etc.)."""
+
+    plan_id: str
+    name: str
+    created_at: str
+    updated_at: str
+    load_type: str = Field(
+        description="Fase 5D (correccion final), seccion 5/7 del pedido: el Load Type PERSISTIDO del plan -metadata "
+        "propia del plan, nunca re-inferida de placed[0]/unloaded[0].item_type al reabrir."
+    )
+    result: PackingResult
+    plan_handling_rules: PlanHandlingRules | None
+    optimization_mode: OptimizationMode
+    weight_balance_mode: WeightBalanceMode
+    loading_anchor: LoadingAnchor
+    clearance_mm: float
+    enable_central_aisle: bool
+    aisle_width_mm: float
+    container_id: str | None = Field(default=None, description="Solo si el Load Space es del catalogo (seccion 18 del pedido)")
+    custom_load_space: CustomLoadSpaceRequest | None = Field(
+        default=None, description="Solo si el Load Space es custom (seccion 19 del pedido); nunca un fallback a catalogo"
+    )
+
+
+class RenamePlanRequest(BaseModel):
+    """Seccion 28 del pedido: renombrar un plan guardado."""
+
+    name: str = Field(min_length=1)
+
+
+class SavePlanRequest(BaseModel):
+    """Fase 5D (correccion final), seccion 1/2 del pedido: PUT /api/plans/{id}
+    sigue sin body para el autosave normal (dispara con cualquier cambio de
+    `result` -ver api/routes.py). Este body OPCIONAL es exclusivamente para
+    el autosave de Plan Handling Rules: cuando esta presente,
+    `plan_handling_rules` se aplica a _current_state ANTES de persistir -sin
+    tocar placed/unloaded ni volver a correr el optimizador (seccion 2:
+    guardar la configuracion no es lo mismo que recalcular la colocacion)."""
+
+    plan_handling_rules: PlanHandlingRules | None = None
+
+
+class DeletePlanResponse(BaseModel):
+    deleted: bool
+    plan_id: str

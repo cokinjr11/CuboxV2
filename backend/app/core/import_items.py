@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from openpyxl import load_workbook
 
 from app.core.excel_import import TRUE_VALUES
+from app.core.load_priority import parse_load_priority_cell
 from app.models.import_schemas import ImportDefaults, ImportIssue, ImportIssueSeverity, ImportPreview, ImportSummary
 from app.models.schemas import Dimensions3D, ItemType, LoadItem, OrientationPolicy, dimensions_from_legacy
 
@@ -45,6 +46,7 @@ _COLUMN_ALIASES: dict[str, str] = {
     "group": "group",
     "stackable": "stackable",
     "priority": "priority",
+    "loadpriority": "priority",
     "maxstackweight": "max_stack_weight",
     "deliverysequence": "delivery_sequence",
     "stop": "delivery_sequence",
@@ -300,10 +302,11 @@ def _parse_row(
 
     priority = 0
     if values.get("priority") not in (None, ""):
-        try:
-            priority = int(values["priority"])
-        except (TypeError, ValueError):
-            err("priority", "INVALID_NUMBER", "Priority debe ser un numero entero")
+        parsed_priority = parse_load_priority_cell(values["priority"])
+        if parsed_priority is None:
+            err("priority", "INVALID_VALUE", "Load Priority debe ser High, Normal, Low o un numero entero")
+        else:
+            priority = parsed_priority
 
     max_stack_weight = None
     if values.get("max_stack_weight") not in (None, ""):

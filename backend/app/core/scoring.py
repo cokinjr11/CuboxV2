@@ -1,12 +1,17 @@
 """Puntuacion de una solucion de cubicaje (seccion 5 de V2).
 
 score = loadedPiecesScore + priorityScore + volumeScore + floorScore
-        + groupingScore + accessibilityScore (ponderados)
+        + groupingScore + deliveryScore + accessibilityScore (ponderados)
 
 Los pesos son internos (no se exponen al usuario). Cuando el Optimization
 Mode es Keep Groups/Systems Together, se le da mas peso a groupingScore y
 menos a volumen/piso, para que el modo elegido realmente cambie el resultado.
-"""
+Fase 6A.1: mismo criterio para Prioritize Delivery Sequence, con
+deliveryScore -mide que tan bien la geometria final respeta "menor Delivery
+Sequence mas cerca de la puerta" (ver _delivery_score). deliveryScore se
+calcula SIEMPRE (aparece en score_breakdown para cualquier modo, es
+informativo) pero solo pesa en el score final cuando el modo es
+PRIORITIZE_DELIVERY."""
 
 from collections import defaultdict
 
@@ -42,6 +47,19 @@ _GROUPING_WEIGHTS = {
     "accessibility": 0.05,
     "balance": 0.10,
 }
+
+_DELIVERY_WEIGHTS = {
+    "loaded": 0.28,
+    "priority": 0.18,
+    "volume": 0.08,
+    "floor": 0.04,
+    "delivery": 0.27,
+    "accessibility": 0.05,
+    "balance": 0.10,
+}
+"""Fase 6A.1: mismos numeros que _GROUPING_WEIGHTS (mismo patron -menos peso
+a volumen/piso, mas peso al componente que el modo elegido realmente intenta
+optimizar), reemplazando "grouping" por "delivery"."""
 
 
 def _priority_weight(priority: int) -> int:
@@ -121,12 +139,91 @@ def _accessibility_score(result: PackingResult) -> float:
     return min(1.0, largest_gap / MIN_WALK_WIDTH_MM)
 
 
+def _delivery_score(result: PackingResult) -> float:
+    """Fase 6A.1: que tan bien la geometria final respeta "menor Delivery
+    Sequence => mas cerca de la puerta (x chico)". Proxy O(n^2) por pares
+    -mismo criterio de aproximacion ya usado en otras heuristicas de este
+    modulo y en core/sequence.py (compute_blocking_pairs): para cada par de
+    piezas colocadas con Delivery Sequence DISTINTA, el par esta "bien
+    ordenado" si la de menor Delivery Sequence tiene x <= la de mayor (con
+    tolerancia).
+
+    Fase 6A.1 FINAL (seccion 11 del pedido -auditoria): esta funcion (y
+    strategies.py:_delivery_key, que decide el ORDEN de colocacion) antes
+    solo consideraban X/profundidad -CERO nocion de Z/apilado. Confirmado
+    sobre el dataset real (392 unidades, seccion 12): bajo Prioritize
+    Delivery Sequence, 5 de los 8 warnings restantes eran
+    STACKING_SEQUENCE_CONFLICT (una pieza de Delivery Sequence mas bajo
+    atrapada debajo de una de Delivery Sequence mas alto), un tipo que esta
+    funcion no podia distinguir de un layout perfecto.
+
+    Se agrega ahora una segunda familia de pares: soporte vertical DIRECTO
+    (B descansa justo encima de A, mismo criterio de contacto que
+    core/sequence.py:_direct_supporters -reimplementado aca en chico para
+    no acoplar core/scoring.py a core/sequence.py). Un par de soporte esta
+    "bien ordenado" si el que soporta (A, abajo) tiene Delivery Sequence
+    MENOR O IGUAL al que descansa encima (B) -si A tuviera que salir antes
+    pero queda atrapado debajo de B, es una violacion.
+
+    Esto es una mejora puramente de SCORING: ayuda a elegir la mejor de las
+    7 estrategias candidatas si difieren en como quedo apilado el layout
+    -NO toca la busqueda de candidatos del packer (packer.py), no puede
+    afectar soporte/colision/Max Stack Weight/contencion (siguen siendo
+    responsabilidad exclusiva del packer, sin cambios). 1.0 si no hay al
+    menos 2 piezas con Delivery Sequence definida, o si ningun par (lateral
+    ni de soporte) tiene valores distintos -nada que violar."""
+    with_delivery = [p for p in result.placed if p.delivery_sequence is not None]
+    if len(with_delivery) < 2:
+        return 1.0
+
+    total_pairs = 0
+    ordered_pairs = 0
+    for i, a in enumerate(with_delivery):
+        for b in with_delivery[i + 1 :]:
+            if a.delivery_sequence == b.delivery_sequence:
+                continue
+            lower, higher = (a, b) if a.delivery_sequence < b.delivery_sequence else (b, a)
+            total_pairs += 1
+            if lower.x <= higher.x + TOL:
+                ordered_pairs += 1
+
+    for support in with_delivery:
+        for resting in with_delivery:
+            if support.id == resting.id or support.delivery_sequence == resting.delivery_sequence:
+                continue
+            touches = abs((support.z + support.dz) - resting.z) < TOL
+            overlaps_xy = (
+                max(0.0, min(support.x + support.dx, resting.x + resting.dx) - max(support.x, resting.x)) > TOL
+                and max(0.0, min(support.y + support.dy, resting.y + resting.dy) - max(support.y, resting.y)) > TOL
+            )
+            if not (touches and overlaps_xy):
+                continue
+            total_pairs += 1
+            # "Bien ordenado" cuando el soporte (sale DESPUES por fisica,
+            # seccion 13 del pedido) tiene Delivery Sequence estrictamente
+            # MAYOR -su propia entrega ya era tardia, no le molesta salir
+            # despues. Violacion cuando es MENOR (queria salir antes pero
+            # queda atrapado debajo de algo con entrega mas tardia) -mismo
+            # criterio de direccion que core/sequence.py:_delivery_conflict
+            # para STACKING_SEQUENCE_CONFLICT (first=resting, trapped=support;
+            # conflicto si first.delivery > trapped.delivery).
+            if support.delivery_sequence > resting.delivery_sequence:
+                ordered_pairs += 1
+
+    return ordered_pairs / total_pairs if total_pairs > 0 else 1.0
+
+
 def _weights_for(optimization_mode: OptimizationMode, weight_balance_mode: WeightBalanceMode) -> dict[str, float]:
     """Pesos base segun el Optimization Mode, con el peso de `balance`
     ajustado por Weight Balance (Ignore=0, Normal=el valor de siempre,
     Important=el doble) y el resto renormalizado proporcionalmente para
     seguir sumando 1.0."""
-    weights = dict(_BASE_WEIGHTS if optimization_mode == OptimizationMode.BEST_SPACE else _GROUPING_WEIGHTS)
+    if optimization_mode == OptimizationMode.BEST_SPACE:
+        weights = dict(_BASE_WEIGHTS)
+    elif optimization_mode == OptimizationMode.PRIORITIZE_DELIVERY:
+        weights = dict(_DELIVERY_WEIGHTS)
+    else:
+        weights = dict(_GROUPING_WEIGHTS)
 
     normal_balance = weights["balance"]
     target_balance = {
@@ -160,6 +257,7 @@ def _compute_components(result: PackingResult, optimization_mode: OptimizationMo
         "volume": result.metrics.used_volume_pct / 100,
         "floor": result.metrics.floor_utilization_pct / 100,
         "grouping": _clustering_score(result.placed, key_fn, container_volume),
+        "delivery": _delivery_score(result),
         "accessibility": _accessibility_score(result),
         "balance": result.metrics.weight_balance_pct / 100,
     }

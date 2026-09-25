@@ -9,7 +9,7 @@ const OPTIONS: { value: ColorByMode; label: string }[] = [
   { value: "default", label: "Default" },
   { value: "group", label: "Group" },
   { value: "system", label: "System" },
-  { value: "priority", label: "Priority" },
+  { value: "priority", label: "Load Priority" },
 ];
 
 export function ColorByControl({ value, onChange }: Props) {

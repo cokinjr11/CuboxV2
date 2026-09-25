@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { SortReportBy, StepMode } from "../types";
 
 export type ReportType = "container" | "loading_guide" | "unloading_guide";
+export type UnloadingGuideScope = "full" | "by_group";
 
 const PIECES_PER_STEP_OPTIONS = [1, 2, 3, 5, 10] as const;
 
@@ -13,15 +14,18 @@ export interface ReportSettings {
   includeOverviewImage: boolean;
   projectName: string;
   customer: string;
+  unloadingGuideScope: UnloadingGuideScope;
+  selectedGroups: string[];
 }
 
 interface Props {
   onClose: () => void;
   onGenerate: (settings: ReportSettings) => Promise<void>;
   generating: boolean;
+  availableGroups: string[];
 }
 
-export function ReportSettingsModal({ onClose, onGenerate, generating }: Props) {
+export function ReportSettingsModal({ onClose, onGenerate, generating, availableGroups }: Props) {
   const [reportType, setReportType] = useState<ReportType>("container");
   const [sortBy, setSortBy] = useState<SortReportBy>("group");
   const [stepMode, setStepMode] = useState<StepMode>("automatic");
@@ -31,8 +35,15 @@ export function ReportSettingsModal({ onClose, onGenerate, generating }: Props) 
   const [includeOverviewImage, setIncludeOverviewImage] = useState(true);
   const [projectName, setProjectName] = useState("");
   const [customer, setCustomer] = useState("");
+  const [unloadingGuideScope, setUnloadingGuideScope] = useState<UnloadingGuideScope>("full");
+  const [selectedGroups, setSelectedGroups] = useState<string[]>([]);
 
   const isGuide = reportType === "loading_guide" || reportType === "unloading_guide";
+  const isUnloadingByGroup = reportType === "unloading_guide" && unloadingGuideScope === "by_group";
+
+  function toggleGroup(group: string) {
+    setSelectedGroups((prev) => (prev.includes(group) ? prev.filter((g) => g !== group) : [...prev, group]));
+  }
 
   async function handleGenerate() {
     await onGenerate({
@@ -43,8 +54,12 @@ export function ReportSettingsModal({ onClose, onGenerate, generating }: Props) 
       includeOverviewImage,
       projectName,
       customer,
+      unloadingGuideScope,
+      selectedGroups,
     });
   }
+
+  const generateDisabled = generating || (isUnloadingByGroup && selectedGroups.length === 0);
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -110,6 +125,48 @@ export function ReportSettingsModal({ onClose, onGenerate, generating }: Props) 
           </div>
         )}
 
+        {reportType === "unloading_guide" && (
+          <div className="settings-section">
+            <h3>Unloading Guide Scope</h3>
+            <div className="radio-group">
+              <label>
+                <input
+                  type="radio"
+                  checked={unloadingGuideScope === "full"}
+                  onChange={() => setUnloadingGuideScope("full")}
+                />
+                Full Unloading Guide (one PDF, whole plan)
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  checked={unloadingGuideScope === "by_group"}
+                  onChange={() => setUnloadingGuideScope("by_group")}
+                />
+                By Group (one PDF per selected Group)
+              </label>
+            </div>
+            {unloadingGuideScope === "by_group" && (
+              <div className="checkbox-group">
+                {availableGroups.length === 0 ? (
+                  <p className="hint">No hay Groups definidos en este plan.</p>
+                ) : (
+                  availableGroups.map((group) => (
+                    <label className="checkbox-row" key={group}>
+                      <input
+                        type="checkbox"
+                        checked={selectedGroups.includes(group)}
+                        onChange={() => toggleGroup(group)}
+                      />
+                      {group}
+                    </label>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         {isGuide && (
           <div className="settings-section">
             <h3>Step Mode</h3>
@@ -172,7 +229,7 @@ export function ReportSettingsModal({ onClose, onGenerate, generating }: Props) 
           </label>
         </div>
 
-        <button className="btn btn-primary" onClick={handleGenerate} disabled={generating}>
+        <button className="btn btn-primary" onClick={handleGenerate} disabled={generateDisabled}>
           {generating ? "Generando PDF..." : "Generate PDF"}
         </button>
       </div>

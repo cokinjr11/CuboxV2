@@ -29,3 +29,29 @@ export function extractErrorMessage(error: unknown, fallback: string): string {
 
   return fallback;
 }
+
+// Fase 6B.1, seccion 11 del pedido: bug real encontrado en produccion -las
+// llamadas de export PDF usan `responseType: "blob"` (necesario para poder
+// descargar el PDF exitoso como archivo binario), pero eso hace que Axios
+// tambien devuelva el CUERPO DE ERROR como Blob en vez de JSON ya parseado
+// cuando el backend responde con un status distinto de 2xx (422/400/500) -
+// `error.response.data` nunca es el objeto {detail: ...} en ese caso, es un
+// Blob, asi que extractErrorMessage() siempre caia al fallback generico
+// ("Error al generar el reporte") sin importar que tan especifico fuera el
+// error real del backend (ej. "BOX-011-003: Pieza flotando: no hay soporte
+// debajo" de core/final_validation.py). Esta version lee el Blob como texto,
+// lo parsea como JSON, y reusa extractErrorMessage sobre el resultado -sin
+// duplicar esa logica de extraccion.
+export async function extractErrorMessageFromBlobResponse(error: unknown, fallback: string): Promise<string> {
+  const data = (error as { response?: { data?: unknown } })?.response?.data;
+  if (data instanceof Blob) {
+    try {
+      const text = await data.text();
+      const parsed = JSON.parse(text);
+      return extractErrorMessage({ response: { data: parsed } }, fallback);
+    } catch {
+      return fallback;
+    }
+  }
+  return extractErrorMessage(error, fallback);
+}

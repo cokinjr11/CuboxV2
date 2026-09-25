@@ -416,10 +416,12 @@ def _template_headers(profile: str) -> list[str]:
 
 
 def test_box_template_has_expected_headers():
+    """Load Organization Model Cleanup: Delivery Sequence y Load Priority
+    (antes "Priority") quedan al final, en ese orden."""
     headers = _template_headers("box")
     assert headers == [
         "Code", "Quantity", "Length", "Width", "Height", "Weight",
-        "Description", "Orientation", "Stackable", "Max Stack Weight", "Group", "Priority", "Delivery Sequence",
+        "Description", "Orientation", "Stackable", "Max Stack Weight", "Group", "Delivery Sequence", "Load Priority",
     ]
 
 
@@ -450,10 +452,14 @@ def test_custom_template_requires_orientation_column():
 
 
 def test_round_trip_template_to_import():
+    """Load Organization Model Cleanup: el template ahora termina en
+    Delivery Sequence, Load Priority (en ese orden) -esta fila usa un valor
+    de texto ("High") para Load Priority a proposito, para probar el
+    round-trip con la forma NUEVA preferida, no solo la numerica legacy."""
     r = client.get("/api/import-template/box")
     workbook = load_workbook(io.BytesIO(r.content))
     items_sheet = workbook["Items"]
-    items_sheet.append(["RT1", 3, 700, 500, 400, 30, "Round trip test", "UPRIGHT", "Yes", "", "G1", 2, ""])
+    items_sheet.append(["RT1", 3, 700, 500, 400, 30, "Round trip test", "UPRIGHT", "Yes", "", "G1", 4, "High"])
     buffer = io.BytesIO()
     workbook.save(buffer)
 
@@ -468,7 +474,98 @@ def test_round_trip_template_to_import():
     assert item["orientation_policy"] == "upright"
     assert item["stackable"] is True
     assert item["group"] == "G1"
-    assert item["priority"] == 2
+    assert item["delivery_sequence"] == 4
+    assert item["priority"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Load Organization Model Cleanup: Load Priority (columna "Load Priority" o
+# "Priority", High/Normal/Low o entero legacy) y Delivery Sequence opcional/
+# blanco-seguro/repetible.
+# ---------------------------------------------------------------------------
+
+_BOX_HEADERS = ["Code", "Quantity", "Length", "Width", "Height", "Weight", "Group", "Delivery Sequence", "Load Priority"]
+
+
+@pytest.mark.parametrize(
+    "text_value,expected_int",
+    [("High", 1), ("high", 1), ("HIGH", 1), ("Normal", 3), ("normal", 3), ("Low", 5), ("low", 5)],
+)
+def test_load_priority_accepts_high_normal_low_case_insensitively(text_value, expected_int):
+    r = _import("box", _BOX_HEADERS, [["BOX1", 1, 600, 400, 300, 25, "", "", text_value]])
+    preview = r.json()
+    assert preview["is_valid"] is True
+    assert preview["items"][0]["priority"] == expected_int
+
+
+def test_load_priority_still_accepts_legacy_numeric_value():
+    """Backward compat (seccion 20/21 del pedido): un archivo viejo con un
+    entero crudo en la columna Priority/Load Priority sigue funcionando tal
+    cual, sin requerir texto."""
+    r = _import("box", _BOX_HEADERS, [["BOX1", 1, 600, 400, 300, 25, "", "", 2]])
+    preview = r.json()
+    assert preview["is_valid"] is True
+    assert preview["items"][0]["priority"] == 2
+
+
+def test_load_priority_column_alias_also_recognized():
+    """El header nuevo del template ("Load Priority") normaliza a la misma
+    clave interna que el alias legacy ("Priority") -no son 2 campos."""
+    r = _import("box", _BOX_HEADERS, [["BOX1", 1, 600, 400, 300, 25, "", "", "High"]])
+    preview = r.json()
+    assert preview["items"][0]["priority"] == 1
+
+
+def test_load_priority_blank_defaults_to_normal_zero():
+    """Vacio = 0 (Normal/medio, sin cambios de comportamiento -seccion 1 del
+    pedido: 'Do not require users to populate the column')."""
+    r = _import("box", _BOX_HEADERS, [["BOX1", 1, 600, 400, 300, 25, "", "", ""]])
+    preview = r.json()
+    assert preview["is_valid"] is True
+    assert preview["items"][0]["priority"] == 0
+
+
+def test_load_priority_invalid_text_is_a_soft_error_not_a_crash():
+    r = _import("box", _BOX_HEADERS, [["BOX1", 1, 600, 400, 300, 25, "", "", "Urgent"]])
+    preview = r.json()
+    assert preview["is_valid"] is False
+    assert any(issue["column"] == "priority" for issue in preview["errors"])
+
+
+def test_delivery_sequence_blank_is_none_not_zero():
+    r = _import("box", _BOX_HEADERS, [["BOX1", 1, 600, 400, 300, 25, "", "", ""]])
+    preview = r.json()
+    assert preview["items"][0]["delivery_sequence"] is None
+
+
+def test_delivery_sequence_repeated_values_are_valid():
+    """Varias piezas comparten la misma parada de entrega -caso NORMAL, no
+    un error (seccion 5 del pedido)."""
+    r = _import(
+        "box",
+        _BOX_HEADERS,
+        [
+            ["BOX1", 1, 600, 400, 300, 25, "", 1, ""],
+            ["BOX2", 1, 600, 400, 300, 25, "", 1, ""],
+            ["BOX3", 1, 600, 400, 300, 25, "", 2, ""],
+        ],
+    )
+    preview = r.json()
+    assert preview["is_valid"] is True
+    delivery_sequences = [item["delivery_sequence"] for item in preview["items"]]
+    assert delivery_sequences == [1, 1, 2]
+
+
+def test_group_does_not_require_delivery_sequence_or_vice_versa():
+    """Group y Delivery Sequence son independientes -tener uno no exige
+    tener el otro (seccion 1 del pedido: 'Group does NOT inherently mean
+    unloading order')."""
+    r = _import("box", _BOX_HEADERS, [["BOX1", 1, 600, 400, 300, 25, "Obra Samborondon", "", ""]])
+    preview = r.json()
+    assert preview["is_valid"] is True
+    item = preview["items"][0]
+    assert item["group"] == "Obra Samborondon"
+    assert item["delivery_sequence"] is None
 
 
 # ---------------------------------------------------------------------------

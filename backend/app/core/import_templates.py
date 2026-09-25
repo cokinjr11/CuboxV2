@@ -11,6 +11,7 @@ import io
 from openpyxl import Workbook
 from openpyxl.worksheet.datavalidation import DataValidation
 
+from app.core.load_priority import LOAD_PRIORITY_LABELS
 from app.models.schemas import ItemType
 
 TEMPLATE_VERSION = 1
@@ -21,10 +22,15 @@ _ORIENTATION_OPTIONS_BY_PROFILE: dict[ItemType, list[str]] = {
     ItemType.CUSTOM: ["FREE", "UPRIGHT", "FIXED"],
 }
 
+# Load Organization Model Cleanup: Delivery Sequence y Load Priority SIEMPRE
+# al final, en ese orden -ambas opcionales, ninguna reemplaza a la otra (ver
+# core/load_priority.py). Group/System se quedan donde ya estaban -el pedido
+# solo exige que estas 2 ultimas columnas queden al final, no que Group se
+# mueva.
 _HEADERS_BY_PROFILE: dict[ItemType, list[str]] = {
     ItemType.BOX: [
         "Code", "Quantity", "Length", "Width", "Height", "Weight",
-        "Description", "Orientation", "Stackable", "Max Stack Weight", "Group", "Priority", "Delivery Sequence",
+        "Description", "Orientation", "Stackable", "Max Stack Weight", "Group", "Delivery Sequence", "Load Priority",
     ],
     ItemType.PALLET: [
         # Orientation es OPCIONAL (Fase 6): si se omite, se usa el Floor
@@ -33,7 +39,7 @@ _HEADERS_BY_PROFILE: dict[ItemType, list[str]] = {
         # inventario, nunca afecta packing- por eso solo se expone en PALLET,
         # que es el perfil donde "cuantas cajas trae este pallet" tiene sentido.
         "Code", "Quantity", "Length", "Width", "Height", "Weight",
-        "Description", "Orientation", "Stackable", "Max Stack Weight", "Boxes Inside", "Group", "Priority", "Delivery Sequence",
+        "Description", "Orientation", "Stackable", "Max Stack Weight", "Boxes Inside", "Group", "Delivery Sequence", "Load Priority",
     ],
     ItemType.PANEL: [
         # Fase 5C-FINAL: Tilt/Inclination es PLAN-LEVEL ONLY (Wizard ->
@@ -42,11 +48,11 @@ _HEADERS_BY_PROFILE: dict[ItemType, list[str]] = {
         # importando bien (ver import_items.py: esas columnas simplemente
         # se ignoran).
         "Code", "Quantity", "Width", "Height", "Thickness", "Weight",
-        "Description", "System", "Group", "Stackable", "Max Stack Weight", "Priority", "Delivery Sequence",
+        "Description", "System", "Group", "Stackable", "Max Stack Weight", "Delivery Sequence", "Load Priority",
     ],
     ItemType.CUSTOM: [
         "Code", "Quantity", "Length", "Width", "Height", "Weight", "Orientation",
-        "Description", "Stackable", "Max Stack Weight", "Group", "Priority", "Delivery Sequence",
+        "Description", "Stackable", "Max Stack Weight", "Group", "Delivery Sequence", "Load Priority",
     ],
 }
 
@@ -64,10 +70,14 @@ _COLUMN_NOTES: dict[str, str] = {
     "UPRIGHT = Height siempre permanece vertical. FIXED = sin cambios de orientacion.",
     "Stackable": "Yes/No. Si se omite, se asume No para este perfil.",
     "Max Stack Weight": "Peso maximo (kg) que puede soportar encima de este item. Vacio = sin limite.",
-    "Group": "Etiqueta de agrupamiento. Opcional.",
+    "Group": "Etiqueta de agrupamiento (proyecto/obra/cliente/grupo de entrega). Opcional. NO determina el orden "
+    "de descarga -para eso usar Delivery Sequence.",
     "System": "Sistema/linea de producto (uso tipico en ventanas). Opcional.",
-    "Priority": "Prioridad de carga (numero entero). Vacio = 0 (prioridad media).",
-    "Delivery Sequence": "Orden de entrega/parada. Opcional, numerico.",
+    "Delivery Sequence": "Orden/parada de entrega deseado (numero menor = entrega mas temprana). Opcional -vacio "
+    "significa que no se definio ninguna preferencia (nunca se interpreta como 0). Varias piezas pueden compartir "
+    "el mismo numero (misma parada).",
+    "Load Priority": "Que tan importante es que este item SI se cargue si no entra todo. High, Normal o Low "
+    "(no distingue mayusculas). Vacio = Normal. No es el orden de descarga -para eso usar Delivery Sequence.",
     "Boxes Inside": "Cuantas cajas/unidades individuales contiene este pallet ya armado. Solo informativo: no "
     "afecta el empaquetado ni la orientacion, es para trazabilidad, logistica e inventario (aparece en los "
     "reportes y en la Loading/Unloading Guide). Vacio = no se muestra ese dato.",
@@ -111,6 +121,7 @@ def build_import_template(profile: ItemType) -> bytes:
 
     _add_dropdown(items_sheet, headers, "Orientation", _ORIENTATION_OPTIONS_BY_PROFILE.get(profile))
     _add_dropdown(items_sheet, headers, "Stackable", ["Yes", "No"])
+    _add_dropdown(items_sheet, headers, "Load Priority", LOAD_PRIORITY_LABELS)
 
     _build_instructions_sheet(workbook, profile, headers)
 

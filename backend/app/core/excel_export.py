@@ -4,7 +4,14 @@ import io
 
 from openpyxl import Workbook
 
-from app.models.schemas import ItemType, PackingResult, PlacedPiece
+from app.core.load_priority import load_priority_label
+from app.models.schemas import ItemType, PackingResult, PlacedPiece, PlanValidationStatus, ReportValidationResponse
+
+_PLAN_STATUS_LABELS = {
+    PlanValidationStatus.READY: "READY",
+    PlanValidationStatus.READY_WITH_WARNINGS: "READY WITH WARNINGS",
+    PlanValidationStatus.NOT_READY: "NOT READY",
+}
 
 
 def _is_palletized_plan(placed: list[PlacedPiece]) -> bool:
@@ -29,7 +36,15 @@ def _format_signed_tilt(tilt_angle: float) -> str:
     return f"{tilt_angle:+g}°" if tilt_angle else ""
 
 
-def build_export_workbook(state: PackingResult) -> bytes:
+def build_export_workbook(state: PackingResult, override: "ReportValidationResponse | None" = None) -> bytes:
+    """`override` (Configurable Export Validation Override, Part B): solo
+    no-None cuando el export de un plan NOT_READY fue explicitamente
+    permitido pese a errores bloqueantes (ver
+    routes.py:_resolve_export_validation/_export_override) -nunca se
+    recalcula la validacion aca, solo se refleja el status YA calculado por
+    Fase 6C. Un export normal (READY/READY_WITH_WARNINGS) sigue exactamente
+    igual que antes -sin filas nuevas (seccion 44: nunca marcar un export
+    valido como si tuviera errores)."""
     wb = Workbook()
     is_pallet_plan = _is_palletized_plan(state.placed) or (
         not state.placed and bool(state.unloaded) and state.unloaded[0].item_type == ItemType.PALLET
@@ -48,11 +63,24 @@ def build_export_workbook(state: PackingResult) -> bytes:
     summary.append(["Weight Utilization %", state.metrics.weight_utilization_pct])
     summary.append(["Number of Groups", state.metrics.number_of_groups])
     summary.append(["Number of Systems", state.metrics.number_of_systems])
+    # Fase 6A, seccion 30/35: nunca exportar una secuencia "perfecta" en
+    # silencio si hay conflictos operacionales detectados.
+    summary.append([
+        "Operational Sequence",
+        "Valid" if not state.operational_warnings else f"{len(state.operational_warnings)} Warning(s)",
+    ])
+    if override is not None:
+        # Seccion 36 del pedido: metadata clara de que este export se
+        # genero pese a errores bloqueantes -NUNCA se oculta ni se
+        # reinterpreta el status (sigue siendo NOT_READY, no se "arregla"
+        # para que la fila diga READY).
+        summary.append(["Plan Status", _PLAN_STATUS_LABELS[override.status]])
+        summary.append(["Export Override", "Yes"])
 
     packing_list = wb.create_sheet("Packing List")
     packing_header = [
         "Load Order", "Unload Order", "Code", "Description", "Width", "Height", "Thickness", "Weight",
-        "Group", "System", "Priority",
+        "Group", "System", "Delivery Sequence", "Load Priority",
     ]
     if is_pallet_plan:
         packing_header.append("Boxes Inside")
@@ -73,7 +101,8 @@ def build_export_workbook(state: PackingResult) -> bytes:
             p.weight,
             p.group,
             p.system,
-            p.priority,
+            p.delivery_sequence if p.delivery_sequence is not None else "",
+            load_priority_label(p.priority),
         ]
         if is_pallet_plan:
             row.append(p.boxes_inside)
@@ -91,6 +120,14 @@ def build_export_workbook(state: PackingResult) -> bytes:
         if is_pallet_plan:
             row.append(u.boxes_inside)
         unloaded_sheet.append(row)
+
+    if state.operational_warnings:
+        # Fase 6A: solo se crea si hay algo que mostrar -no ensuciar el libro
+        # con una hoja vacia en el caso comun (secuencia sin conflictos).
+        warnings_sheet = wb.create_sheet("Sequence Warnings")
+        warnings_sheet.append(["Type", "Item", "Blocking Item", "Message"])
+        for w in state.operational_warnings:
+            warnings_sheet.append([w.type.value, w.item_id or "", w.blocking_item_id or "", w.message])
 
     buf = io.BytesIO()
     wb.save(buf)

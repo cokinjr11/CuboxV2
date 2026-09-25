@@ -5,7 +5,6 @@ from fastapi.testclient import TestClient
 
 from app.core.pdf_export import (
     CONTAINER_REPORT_COLUMNS,
-    _batch_steps_for_pages,
     _is_palletized_plan,
     build_container_report_pdf,
     build_container_report_table_rows,
@@ -120,6 +119,29 @@ def test_build_container_report_pdf_generates_valid_pdf_bytes():
     assert pdf_bytes[:5] == b"%PDF-"
 
 
+def test_build_container_report_pdf_includes_operational_sequence_warnings():
+    """Fase 6A, seccion 35: no debe explotar (ni exportar en silencio) cuando
+    hay warnings operacionales -solo se confirma que sigue generando un PDF
+    valido, sin parsear el texto interno (igual criterio que el resto de
+    estos tests)."""
+    from app.api.routes import _get_active_state
+    from app.models.schemas import OperationalWarning, OperationalWarningType
+
+    _pack([_window(quantity=3)])
+    state = _get_active_state()
+    state.operational_warnings = [
+        OperationalWarning(
+            type=OperationalWarningType.DELIVERY_SEQUENCE_CONFLICT,
+            message="P001 is scheduled for Delivery Sequence 1 but is blocked by P002 (Delivery Sequence 3).",
+            item_id="P001",
+            blocking_item_id="P002",
+        )
+    ]
+
+    pdf_bytes = build_container_report_pdf(state, ContainerReportRequest(include_overview_image=False))
+    assert pdf_bytes[:5] == b"%PDF-"
+
+
 def test_export_container_report_pdf_endpoint():
     _pack([_window(quantity=3)])
     r = client.post("/api/report/container-pdf", json={"include_overview_image": False, "sort_by": "group"})
@@ -157,6 +179,59 @@ def test_report_steps_manual_without_pieces_per_step_rejected():
     assert r.status_code == 400
 
 
+def test_report_steps_unload_includes_delivery_annotation_load_does_not():
+    """Fase 6B, seccion 2/12: unload_step_info/delivery_sections solo se
+    calculan (y exponen) para direction=unload -Delivery Sequence es un
+    concepto de descarga, no de carga."""
+    _pack([_window(quantity=3, delivery_sequence=1)])
+    load_r = client.post("/api/report/steps", json={"direction": "load", "step_mode": "automatic"})
+    unload_r = client.post("/api/report/steps", json={"direction": "unload", "step_mode": "automatic"})
+    assert load_r.json()["unload_step_info"] is None
+    assert load_r.json()["delivery_sections"] is None
+    unload_body = unload_r.json()
+    assert unload_body["unload_step_info"] is not None
+    assert len(unload_body["unload_step_info"]) == len(unload_body["steps"])
+    assert unload_body["delivery_sections"] is not None
+    assert unload_body["delivery_sections"][0]["label"] == "DELIVERY 1"
+
+
+def test_report_steps_never_repacks():
+    """Fase 6B, seccion 28: llamar a /report/steps repetidamente (Automatic
+    o Manual, LOAD o UNLOAD) nunca debe alterar la geometria activa -mismos
+    steps, mismas piezas, sin volver a correr /api/pack ni /api/optimize-
+    remaining internamente."""
+    packed = _pack([_window(quantity=6)])
+    positions_before = {p["id"]: (p["x"], p["y"], p["z"]) for p in packed["placed"]}
+
+    for _ in range(3):
+        client.post("/api/report/steps", json={"direction": "load", "step_mode": "automatic"})
+        client.post("/api/report/steps", json={"direction": "unload", "step_mode": "automatic"})
+
+    from app.api.routes import _get_active_state
+
+    state = _get_active_state()
+    positions_after = {p.id: (p.x, p.y, p.z) for p in state.placed}
+    assert positions_after == positions_before
+
+
+def test_unloading_guide_pdf_includes_delivery_sequence_subtitle_without_reordering():
+    """Fase 6B, seccion 13/19: el PDF de descarga genera bytes validos con
+    items que tienen Delivery Sequence, y build_unloading_guide_pdf usa los
+    MISMOS steps que /report/steps (no los reordena)."""
+    from app.api.routes import _get_active_state
+    from app.models.schemas import ReportMetadata
+
+    _pack([_window(quantity=3, delivery_sequence=1)])
+    state = _get_active_state()
+    steps_before = client.post("/api/report/steps", json={"direction": "unload", "step_mode": "automatic"}).json()["steps"]
+
+    pdf_bytes = build_unloading_guide_pdf(state, steps_before, [], ReportMetadata())
+    assert pdf_bytes[:5] == b"%PDF-"
+
+    steps_after = client.post("/api/report/steps", json={"direction": "unload", "step_mode": "automatic"}).json()["steps"]
+    assert steps_after == steps_before
+
+
 def test_build_guide_step_rows_consolidates_by_code_and_description():
     from app.api.routes import _get_active_state
 
@@ -192,31 +267,6 @@ def _placed(piece_id, code):
         source_height=1,
         source_thickness=1,
     )
-
-
-def test_batch_steps_for_pages_groups_up_to_four_per_page():
-    """Seccion 34: 8 steps NO deben producir 8 paginas -por defecto hasta 4
-    steps/pagina (grid 2x2), asi que deberian caer en ~2 paginas."""
-    steps = [[f"p{i}"] for i in range(8)]
-    pages = _batch_steps_for_pages(steps, pieces_by_id={})
-    assert len(pages) == 2
-    assert pages == [[0, 1, 2, 3], [4, 5, 6, 7]]
-
-
-def test_batch_steps_for_pages_keeps_the_odd_last_step_alone():
-    steps = [[f"p{i}"] for i in range(5)]
-    pages = _batch_steps_for_pages(steps, pieces_by_id={})
-    assert pages[-1] == [4]
-
-
-def test_batch_steps_for_pages_drops_to_two_per_page_when_rows_are_many():
-    """Si un step del lote de 4 tiene demasiadas filas (piezas distintas),
-    ese lote pasa a 2 steps/pagina en vez de 4 para no volverse ilegible."""
-    many_ids = [f"id{i}" for i in range(10)]
-    pieces_by_id = {pid: _placed(pid, f"C{i}") for i, pid in enumerate(many_ids)}
-    steps = [many_ids, ["a"], ["b"], ["c"]]  # el primer step tiene 10 filas distintas
-    pages = _batch_steps_for_pages(steps, pieces_by_id)
-    assert len(pages[0]) == 2
 
 
 def test_build_loading_guide_pdf_one_image_per_step():
@@ -286,7 +336,14 @@ def test_report_validate_endpoint_valid_state():
     _pack([_window(quantity=3)])
     r = client.post("/api/report/validate")
     assert r.status_code == 200
-    assert r.json() == {"valid": True, "errors": []}
+    body = r.json()
+    # Fase 6C: valid/errors/warnings mantienen el mismo significado de
+    # siempre -los campos nuevos (status/categories/etc.) son aditivos, ver
+    # test_final_validation.py para su cobertura dedicada.
+    assert body["valid"] is True
+    assert body["errors"] == []
+    assert body["warnings"] == []
+    assert body["status"] == "ready"
 
 
 def test_pdf_export_rejects_when_state_is_invalid():
@@ -332,3 +389,265 @@ def test_loading_and_unloading_guides_are_never_combined():
     assert r_load.status_code == 200
     assert r_unload.status_code == 200
     assert r_load.headers["content-disposition"] != r_unload.headers["content-disposition"]
+
+
+# ==========================================================================
+# Load Organization Model Cleanup -Group Unloading Guide
+# ==========================================================================
+
+import io  # noqa: E402
+import zipfile  # noqa: E402
+
+from app.core.pdf_export import (  # noqa: E402
+    _cross_group_prerequisite_note,
+    _filter_unload_steps_by_group,
+    _group_metrics,
+    available_unload_groups,
+    build_unloading_guide_pdf_for_group,
+)
+from app.core.sequence import compute_unload_dependencies, compute_unload_steps  # noqa: E402
+
+
+def _two_group_blocking_state():
+    """2 piezas apiladas lateral (no vertical): "blocker" (Group B) queda
+    entre la puerta (x=0) y "blocked" (Group A) -bloqueo fisico real segun
+    compute_blocking_pairs (misma funcion que usa Fase 6A, no una nueva).
+    Se arma pidiendo 2 unidades reales al packer y despues reasignando
+    Group + geometria a mano (mismo patron que
+    test_pdf_export_rejects_when_state_is_invalid), y recalculando
+    blocked_by con la MISMA compute_unload_dependencies -nunca un segundo
+    algoritmo de bloqueo."""
+    from app.api.routes import _current_state
+
+    result = _pack([_window(quantity=2, group="")])
+    state = _current_state["result"]
+    blocked, blocker = state.placed[0], state.placed[1]
+
+    blocker.group, blocked.group = "Group B", "Group A"
+    blocker.x, blocker.y, blocker.z = 0.0, 0.0, 0.0
+    blocked.x, blocked.y, blocked.z = blocker.dx, 0.0, 0.0
+    blocked.dy, blocked.dz = blocker.dy, blocker.dz
+
+    state.blocked_by = compute_unload_dependencies(state.placed)
+    return state
+
+
+def test_available_unload_groups_lists_distinct_groups_sorted():
+    _pack([_window(quantity=1, group="Obra B", code="W1"), _window(quantity=1, group="Obra A", code="W2")])
+    from app.api.routes import _get_active_state
+
+    assert available_unload_groups(_get_active_state().placed) == ["Obra A", "Obra B"]
+
+
+def test_available_unload_groups_ignores_items_without_group():
+    _pack([_window(quantity=2, group="")])
+    from app.api.routes import _get_active_state
+
+    assert available_unload_groups(_get_active_state().placed) == []
+
+
+def test_filter_unload_steps_by_group_keeps_only_that_group_and_original_indices():
+    _pack([_window(quantity=2, group="Obra A", code="W1"), _window(quantity=2, group="Obra B", code="W2")])
+    from app.api.routes import _get_active_state
+
+    state = _get_active_state()
+    pieces_by_id = {p.id: p for p in state.placed}
+    steps = compute_unload_steps(state.placed)
+
+    filtered, original_indices = _filter_unload_steps_by_group(steps, pieces_by_id, "Obra A")
+
+    assert len(filtered) == len(original_indices)
+    for step_ids, original_index in zip(filtered, original_indices):
+        assert all(pieces_by_id[pid].group == "Obra A" for pid in step_ids)
+        assert steps[original_index] is steps[original_index]  # el indice apunta al paso original correcto
+    # nunca se agrega una pieza de Obra B a un step filtrado de Obra A
+    all_filtered_ids = {pid for step in filtered for pid in step}
+    assert all(pieces_by_id[pid].group == "Obra A" for pid in all_filtered_ids)
+
+
+def test_filter_unload_steps_by_group_never_reorders_kept_steps():
+    """El orden relativo de los steps conservados es exactamente el mismo
+    que en `steps` -filtrar nunca reordena."""
+    _pack([_window(quantity=3, group="Obra A", code="W1"), _window(quantity=3, group="Obra B", code="W2")])
+    from app.api.routes import _get_active_state
+
+    state = _get_active_state()
+    pieces_by_id = {p.id: p for p in state.placed}
+    steps = compute_unload_steps(state.placed)
+
+    _, original_indices = _filter_unload_steps_by_group(steps, pieces_by_id, "Obra A")
+    assert original_indices == sorted(original_indices)
+
+
+def test_cross_group_prerequisite_note_flags_foreign_group_blocker():
+    state = _two_group_blocking_state()
+    pieces_by_id = {p.id: p for p in state.placed}
+    blocked = next(p for p in state.placed if p.group == "Group A")
+
+    note = _cross_group_prerequisite_note(state, [blocked.id], "Group A", pieces_by_id)
+
+    assert note is not None
+    assert "OPERATIONAL PREREQUISITE" in note
+    blocker = next(p for p in state.placed if p.group == "Group B")
+    assert blocker.code in note
+    assert "Group B" in note
+
+
+def test_cross_group_prerequisite_note_ignores_same_group_blocker():
+    """Un bloqueador del MISMO Group no genera nota -ya aparece en un paso
+    anterior de la misma guia, en el mismo orden fisico."""
+    state = _two_group_blocking_state()
+    for p in state.placed:
+        p.group = "Group A"  # ambas piezas quedan en el mismo Group
+    pieces_by_id = {p.id: p for p in state.placed}
+    blocked = next(p for p in state.placed if p.x > 0)
+
+    note = _cross_group_prerequisite_note(state, [blocked.id], "Group A", pieces_by_id)
+    assert note is None
+
+
+def test_group_metrics_units_weight_volume_systems_delivery_sequences():
+    _pack(
+        [
+            _window(quantity=2, group="Obra A", code="W1", weight=10, system="SysX", delivery_sequence=1),
+            _window(quantity=1, group="Obra A", code="W2", weight=20, system="SysY", delivery_sequence=3),
+            _window(quantity=1, group="Obra B", code="W3", weight=999),
+        ]
+    )
+    from app.api.routes import _get_active_state
+
+    metrics = _group_metrics(_get_active_state().placed, "Obra A")
+    assert metrics["units"] == 3
+    assert metrics["weight"] == 40
+    assert metrics["systems"] == ["SysX", "SysY"]
+    assert metrics["delivery_sequences"] == [1, 3]
+    assert metrics["volume_m3"] > 0
+
+
+def test_group_metrics_no_delivery_sequence_is_empty_not_zero():
+    _pack([_window(quantity=1, group="Obra A")])
+    from app.api.routes import _get_active_state
+
+    metrics = _group_metrics(_get_active_state().placed, "Obra A")
+    assert metrics["delivery_sequences"] == []
+
+
+def test_build_unloading_guide_pdf_for_group_generates_valid_pdf():
+    from app.api.routes import _get_active_state
+    from app.models.schemas import ReportMetadata
+
+    _pack([_window(quantity=4, group="Obra A", code="W1"), _window(quantity=4, group="Obra B", code="W2")])
+    state = _get_active_state()
+    steps = compute_unload_steps(state.placed)
+
+    pdf_bytes = build_unloading_guide_pdf_for_group(
+        state, steps, [_TINY_PNG_BASE64] * len(steps), ReportMetadata(), None, "Obra A"
+    )
+    assert pdf_bytes[:5] == b"%PDF-"
+
+
+def test_group_guide_never_repacks_or_moves_pieces():
+    from app.api.routes import _get_active_state
+    from app.models.schemas import ReportMetadata
+
+    _pack([_window(quantity=4, group="Obra A", code="W1"), _window(quantity=4, group="Obra B", code="W2")])
+    state = _get_active_state()
+    positions_before = {p.id: (p.x, p.y, p.z) for p in state.placed}
+    steps = compute_unload_steps(state.placed)
+
+    build_unloading_guide_pdf_for_group(state, steps, [_TINY_PNG_BASE64] * len(steps), ReportMetadata(), None, "Obra A")
+
+    state_after = _get_active_state()
+    positions_after = {p.id: (p.x, p.y, p.z) for p in state_after.placed}
+    assert positions_after == positions_before
+
+
+def test_export_unloading_guide_pdf_by_group_endpoint_single_group_returns_pdf():
+    _pack([_window(quantity=4, group="Obra A", code="W1"), _window(quantity=4, group="Obra B", code="W2")])
+    steps_resp = client.post("/api/report/steps", json={"direction": "unload", "step_mode": "automatic"})
+    n_steps = len(steps_resp.json()["steps"])
+
+    r = client.post(
+        "/api/report/unloading-guide-pdf-by-group",
+        json={
+            "step_mode": "automatic",
+            "step_images_png_base64": [_TINY_PNG_BASE64] * n_steps,
+            "groups": ["Obra A"],
+        },
+    )
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/pdf"
+    assert r.content[:5] == b"%PDF-"
+    assert "Obra A" in r.headers["content-disposition"]
+
+
+def test_export_unloading_guide_pdf_by_group_endpoint_multiple_groups_returns_zip():
+    _pack([_window(quantity=4, group="Obra A", code="W1"), _window(quantity=4, group="Obra B", code="W2")])
+    steps_resp = client.post("/api/report/steps", json={"direction": "unload", "step_mode": "automatic"})
+    n_steps = len(steps_resp.json()["steps"])
+
+    r = client.post(
+        "/api/report/unloading-guide-pdf-by-group",
+        json={
+            "step_mode": "automatic",
+            "step_images_png_base64": [_TINY_PNG_BASE64] * n_steps,
+            "groups": ["Obra A", "Obra B"],
+        },
+    )
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/zip"
+
+    zf = zipfile.ZipFile(io.BytesIO(r.content))
+    names = zf.namelist()
+    assert len(names) == 2
+    for name in names:
+        assert zf.read(name)[:5] == b"%PDF-"
+    # nunca se fusionan varios Groups en un solo documento -cada PDF es
+    # independiente dentro del ZIP.
+    assert any("Obra A" in n for n in names)
+    assert any("Obra B" in n for n in names)
+
+
+def test_export_unloading_guide_pdf_by_group_endpoint_requires_at_least_one_group():
+    _pack([_window(quantity=2, group="Obra A")])
+    r = client.post(
+        "/api/report/unloading-guide-pdf-by-group",
+        json={"step_mode": "automatic", "step_images_png_base64": [_TINY_PNG_BASE64] * 2, "groups": []},
+    )
+    assert r.status_code == 400
+
+
+def test_export_unloading_guide_pdf_by_group_endpoint_rejects_unknown_group():
+    _pack([_window(quantity=2, group="Obra A")])
+    r = client.post(
+        "/api/report/unloading-guide-pdf-by-group",
+        json={
+            "step_mode": "automatic",
+            "step_images_png_base64": [_TINY_PNG_BASE64] * 2,
+            "groups": ["Obra Inexistente"],
+        },
+    )
+    assert r.status_code == 400
+
+
+def test_list_unload_groups_endpoint():
+    _pack([_window(quantity=1, group="Obra B", code="W1"), _window(quantity=1, group="Obra A", code="W2")])
+    r = client.get("/api/report/unload-groups")
+    assert r.status_code == 200
+    assert r.json() == ["Obra A", "Obra B"]
+
+
+def test_full_unloading_guide_endpoint_unaffected_by_group_guide_feature():
+    """Regresion explicita: el Full Unloading Guide (sin `groups`) sigue
+    generando exactamente el mismo documento de siempre, sin exigir ni
+    aceptar el campo `groups`."""
+    _pack([_window(quantity=4, group="Obra A", code="W1"), _window(quantity=4, group="Obra B", code="W2")])
+    steps_resp = client.post("/api/report/steps", json={"direction": "unload", "step_mode": "automatic"})
+    n_steps = len(steps_resp.json()["steps"])
+
+    r = client.post(
+        "/api/report/unloading-guide-pdf",
+        json={"step_mode": "automatic", "step_images_png_base64": [_TINY_PNG_BASE64] * n_steps},
+    )
+    assert r.status_code == 200
+    assert r.content[:5] == b"%PDF-"

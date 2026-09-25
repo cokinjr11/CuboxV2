@@ -1,6 +1,7 @@
 import type { ItemType, UnloadedItem } from "../types";
 import { formatDimensions } from "../utils/dimensions";
 import { itemTypeNoun } from "../utils/itemTypeLabels";
+import { loadPriorityLabel } from "../utils/loadPriority";
 
 interface Props {
   items: UnloadedItem[];
@@ -29,7 +30,7 @@ export function UnloadedPanel({ items, insertingItemId, activeItemType, onStartP
                 <th>Weight</th>
                 <th>Group</th>
                 <th>System</th>
-                <th>Priority</th>
+                <th>Load Priority</th>
                 {isPalletPlan && <th>Boxes Inside</th>}
                 <th>Reason</th>
                 <th></th>
@@ -44,7 +45,7 @@ export function UnloadedPanel({ items, insertingItemId, activeItemType, onStartP
                   <td>{it.weight} kg</td>
                   <td>{it.group || "-"}</td>
                   <td>{it.system || "-"}</td>
-                  <td>{it.priority}</td>
+                  <td>{loadPriorityLabel(it.priority)}</td>
                   {isPalletPlan && <td>{it.boxes_inside ?? "-"}</td>}
                   <td className="reason">{it.reason}</td>
                   <td>

@@ -1,5 +1,6 @@
 import axios from "axios";
 import type {
+  AlternativeSolution,
   ContainerSpec,
   CustomLoadSpaceRequestBody,
   ImportDefaults,
@@ -11,9 +12,13 @@ import type {
   OptimizationMode,
   OptimizeResponse,
   PackingResult,
+  PlanDetail,
   PlanHandlingRules,
+  PlanSummary,
   ReportDirection,
   ReportMetadata,
+  ReportStepsResult,
+  ReportValidationResult,
   SortReportBy,
   StepMode,
   WeightBalanceMode,
@@ -122,8 +127,19 @@ export async function optimizeRemaining(options: {
   return r.data;
 }
 
-export async function exportExcel(): Promise<Blob> {
-  const r = await api.get("/export-excel", { responseType: "blob" });
+export async function exportExcel(allowExportWithErrors = false): Promise<Blob> {
+  const r = await api.get("/export-excel", {
+    responseType: "blob",
+    params: { allow_export_with_errors: allowExportWithErrors },
+  });
+  return r.data;
+}
+
+// Fase 6B.1, seccion 11-17 del pedido: chequeo previo (fail-fast) antes de
+// arrancar el loop de capturas de un reporte -reusa /report/validate (ya
+// existia en el backend, nunca se habia consumido desde el frontend).
+export async function validateReport(): Promise<ReportValidationResult> {
+  const r = await api.post<ReportValidationResult>("/report/validate");
   return r.data;
 }
 
@@ -132,6 +148,7 @@ export interface ContainerReportOptions {
   sortBy: SortReportBy;
   includeOverviewImage: boolean;
   overviewImagePngBase64?: string;
+  allowExportWithErrors?: boolean;
 }
 
 export async function exportContainerReportPdf(options: ContainerReportOptions): Promise<Blob> {
@@ -142,6 +159,7 @@ export async function exportContainerReportPdf(options: ContainerReportOptions):
       sort_by: options.sortBy,
       include_overview_image: options.includeOverviewImage,
       overview_image_png_base64: options.overviewImagePngBase64 ?? null,
+      allow_export_with_errors: options.allowExportWithErrors ?? false,
     },
     { responseType: "blob" }
   );
@@ -153,18 +171,19 @@ export interface StepModeOptions {
   piecesPerStep?: number;
 }
 
-export async function getReportSteps(direction: ReportDirection, options: StepModeOptions): Promise<string[][]> {
-  const r = await api.post<{ steps: string[][] }>("/report/steps", {
+export async function getReportSteps(direction: ReportDirection, options: StepModeOptions): Promise<ReportStepsResult> {
+  const r = await api.post<ReportStepsResult>("/report/steps", {
     direction,
     step_mode: options.stepMode,
     pieces_per_step: options.piecesPerStep ?? null,
   });
-  return r.data.steps;
+  return r.data;
 }
 
 export interface GuideReportOptions extends StepModeOptions {
   meta: ReportMetadata;
   stepImagesPngBase64: string[];
+  allowExportWithErrors?: boolean;
 }
 
 function guideReportBody(options: GuideReportOptions) {
@@ -173,6 +192,7 @@ function guideReportBody(options: GuideReportOptions) {
     step_mode: options.stepMode,
     pieces_per_step: options.piecesPerStep ?? null,
     step_images_png_base64: options.stepImagesPngBase64,
+    allow_export_with_errors: options.allowExportWithErrors ?? false,
   };
 }
 
@@ -184,6 +204,27 @@ export async function exportLoadingGuidePdf(options: GuideReportOptions): Promis
 export async function exportUnloadingGuidePdf(options: GuideReportOptions): Promise<Blob> {
   const r = await api.post("/report/unloading-guide-pdf", guideReportBody(options), { responseType: "blob" });
   return r.data;
+}
+
+export interface GuideReportByGroupOptions extends GuideReportOptions {
+  groups: string[];
+}
+
+// Load Organization Model Cleanup: 1 Group seleccionado -> respuesta es un
+// PDF suelto (mismo Content-Type que exportUnloadingGuidePdf). 2+ Groups ->
+// ZIP (un PDF por Group, nunca fusionados). El caller decide el nombre de
+// archivo a partir del content-type de la respuesta (ver handleGenerateReport
+// en App.tsx).
+export async function exportUnloadingGuidePdfByGroup(
+  options: GuideReportByGroupOptions
+): Promise<{ blob: Blob; isZip: boolean }> {
+  const r = await api.post(
+    "/report/unloading-guide-pdf-by-group",
+    { ...guideReportBody(options), groups: options.groups },
+    { responseType: "blob" }
+  );
+  const contentType = (r.headers["content-type"] as string | undefined) ?? "";
+  return { blob: r.data, isZip: contentType.includes("zip") };
 }
 
 export async function validateMove(
@@ -291,4 +332,82 @@ export async function undo(): Promise<PackingResult> {
 export async function redo(): Promise<PackingResult> {
   const r = await api.post<PackingResult>("/redo");
   return r.data;
+}
+
+// ---------------------------------------------------------------------------
+// Fase 5D: Recent Plans & Persistence.
+// ---------------------------------------------------------------------------
+
+export interface CreatePlanResult {
+  planId: string;
+  name: string;
+  best: PackingResult;
+  alternatives: AlternativeSolution[];
+}
+
+/** Corre exactamente la misma optimizacion que packContainer (mismo body)
+ * pero ademas crea un Load Plan PERSISTENTE -el plan recibe un plan_id en
+ * este momento (seccion 12 del pedido: "Create Load Plan" es lo primero
+ * que hace un plan real de un borrador de wizard). `name` es opcional -el
+ * backend genera un nombre por defecto si se omite. */
+export async function createPlan(
+  items: WindowItem[],
+  loadSpace: PackLoadSpace,
+  options: PackOptions,
+  name?: string
+): Promise<CreatePlanResult> {
+  const r = await api.post<{ plan_id: string; name: string; best: PackingResult; alternatives: AlternativeSolution[] }>("/plans", {
+    items,
+    container_id: "containerId" in loadSpace ? loadSpace.containerId : undefined,
+    custom_load_space: "customLoadSpace" in loadSpace ? loadSpace.customLoadSpace : undefined,
+    optimization_mode: options.optimizationMode,
+    enable_central_aisle: options.enableCentralAisle,
+    aisle_width_mm: options.aisleWidthMm,
+    clearance_mm: options.clearanceMm,
+    weight_balance_mode: options.weightBalanceMode,
+    loading_anchor: options.loadingAnchor,
+    plan_handling_rules: options.planHandlingRules,
+    name: name ?? null,
+  });
+  return { planId: r.data.plan_id, name: r.data.name, best: r.data.best, alternatives: r.data.alternatives };
+}
+
+/** Recent Plans en el Home (seccion 9/10/38 del pedido): liviano, ordenado
+ * por updated_at DESC -nunca placed/unloaded completos. */
+export async function listRecentPlans(limit = 10): Promise<PlanSummary[]> {
+  const r = await api.get<PlanSummary[]>("/plans", { params: { limit } });
+  return r.data;
+}
+
+/** Abre un plan guardado -el backend reconstruye su sesion activa desde
+ * cero (seccion 13/14 del pedido: SIN volver a correr el optimizador). */
+export async function getPlan(planId: string): Promise<PlanDetail> {
+  const r = await api.get<PlanDetail>(`/plans/${planId}`);
+  return r.data;
+}
+
+/** Autosave (seccion 24/25 del pedido; `planHandlingRules` es la
+ * correccion final, seccion 1/2 del pedido). Sin `planHandlingRules`: el
+ * backend guarda cualquiera sea el estado activo actual (ya sincronizado
+ * por cada mutacion anterior: apply-move/rotate/turn/tilt/lock/insert/
+ * remove/optimize-remaining, ver api/routes.py). Con `planHandlingRules`:
+ * ademas aplica esa configuracion a la sesion activa ANTES de guardar -sin
+ * tocar placed/unloaded ni volver a correr el optimizador- para que un
+ * cambio de Handling Rule se persista aunque el usuario nunca vuelva a
+ * pulsar Optimize. */
+export async function savePlan(planId: string, planHandlingRules?: PlanHandlingRules): Promise<PlanSummary> {
+  const r = await api.put<PlanSummary>(
+    `/plans/${planId}`,
+    planHandlingRules !== undefined ? { plan_handling_rules: planHandlingRules } : undefined
+  );
+  return r.data;
+}
+
+export async function renamePlan(planId: string, name: string): Promise<PlanSummary> {
+  const r = await api.patch<PlanSummary>(`/plans/${planId}`, { name });
+  return r.data;
+}
+
+export async function deletePlan(planId: string): Promise<void> {
+  await api.delete(`/plans/${planId}`);
 }

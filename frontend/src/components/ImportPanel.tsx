@@ -26,8 +26,8 @@ const ORIENTATION_DEFAULT_OPTIONS: { value: OrientationPolicy; label: string }[]
 ];
 
 const LOADING_ANCHOR_OPTIONS: { value: LoadingAnchor; label: string }[] = [
-  { value: "back_right", label: "Back Right" },
   { value: "back_left", label: "Back Left" },
+  { value: "back_right", label: "Back Right" },
 ];
 
 interface Props {
@@ -53,10 +53,6 @@ interface Props {
    * volver al wizard, ademas de reflejarse en cada pack/optimize-remaining. */
   defaultStackable: boolean;
   orientationPolicy: OrientationPolicy;
-  /** Fase 5C: mismo criterio que defaultStackable/orientationPolicy -solo
-   * tiene efecto real (y solo se muestra) cuando el plan es Panels & Fragile. */
-  defaultAllowTilt: boolean;
-  defaultMaxTiltAngle: number | null;
   loading: boolean;
   error: string;
   onFileSelected: (file: File) => void;
@@ -69,8 +65,6 @@ interface Props {
   onLoadingAnchorChange: (anchor: LoadingAnchor) => void;
   onDefaultStackableChange: (stackable: boolean) => void;
   onOrientationPolicyChange: (policy: OrientationPolicy) => void;
-  onDefaultAllowTiltChange: (allow: boolean) => void;
-  onDefaultMaxTiltAngleChange: (angle: number | null) => void;
   onPack: () => void;
 }
 
@@ -185,6 +179,14 @@ export function ImportPanel({
             onChange={() => onOptimizationModeChange("keep_systems")}
           />
           Keep Systems Together
+        </label>
+        <label>
+          <input
+            type="radio"
+            checked={optimizationMode === "prioritize_delivery"}
+            onChange={() => onOptimizationModeChange("prioritize_delivery")}
+          />
+          Prioritize Delivery Sequence
         </label>
       </div>
 

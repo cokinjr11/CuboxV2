@@ -14,8 +14,8 @@ const WEIGHT_BALANCE_OPTIONS: { value: WeightBalanceMode; label: string }[] = [
 ];
 
 const LOADING_ANCHOR_OPTIONS: { value: LoadingAnchor; label: string }[] = [
-  { value: "back_right", label: "Back Right" },
   { value: "back_left", label: "Back Left" },
+  { value: "back_right", label: "Back Right" },
 ];
 
 interface Props {
